@@ -70,7 +70,7 @@ module "eks_ack_addons" {
   }
   enable_rds               = true
   rds = {
-    chart_version = "v1.4.10"
+    chart_version = "1.4.10"
   }
   enable_secretsmanager    = true
 
@@ -89,6 +89,6 @@ module "kro" {
   namespace        = "kro"
   create_namespace = true
   chart            = "kro"
-  chart_version    = "0.2.1"
-  repository       = "oci://public.ecr.aws/kro"
+  chart_version    = "0.2.2"
+  repository       = "oci://ghcr.io/kro-run/kro"
 }
