@@ -112,6 +112,7 @@ python3 /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/kro-and-
     /home/ec2-user/environment/krmops-on-eks/kro/podidenity/rg.yaml \
     rdswebstack/instance.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/webstack/instance-tmpl.yaml \
+    /home/ec2-user/environment/krmops-on-eks/kro/webapp/rg.yaml \
     --region ${REGION} \
     --cluster krmops-on-eks \
     --ecr-repo-uri ${ECR_IMAGE_URI} \
@@ -228,12 +229,12 @@ echo "Secrets Manager Policy ARN: $SM_POLICY_ARN"
 # Install secret provider
 # ========================================
 
-helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
-helm install -n kube-system csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver
+ su ec2-user -c 'helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts'
+ su ec2-user -c 'helm install -n kube-system csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver'
 
 # ========================================
 # Apply ingress class
 # ========================================
 
-kubectl apply -f ingress/ingressclass.yaml
-kubectl apply -f ingress/ingressClassParams.yaml
+su ec2-user -c 'kubectl apply -f ingress/ingressClass.yaml'
+su ec2-user -c 'kubectl apply -f ingress/ingressClassParams.yaml'

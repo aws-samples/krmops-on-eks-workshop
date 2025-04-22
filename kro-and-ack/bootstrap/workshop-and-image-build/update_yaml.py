@@ -131,7 +131,7 @@ def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest"):
         doc = yaml.safe_load(f)
     if doc.get("kind") != "DbWebStack":
         fail(f"{path} is not a DbWebStack resource")
-    full_image = f"{repo_uri}:{tag}"
+    full_image = f"{repo_uri}:{tag}" 
     doc["spec"]["image"] = full_image
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
@@ -150,6 +150,27 @@ def update_webstack_yaml(path: str, repo_uri: str, tag: str):
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ WebStack YAML updated")
 
+
+def update_webapp_ingress_yaml(path: str, ingress_class: str = "alb"):
+    log(f"Updating WebApp ingress in YAML: {path}")
+    with open(path) as f:
+        doc = yaml.safe_load(f)
+    if doc.get("kind") != "ResourceGraphDefinition":
+        fail(f"{path} is not a ResourceGraphDefinition")
+    updated = False
+    for r in doc["spec"].get("resources", []):
+        if r.get("id") == "ingress":
+            spec = r.get("template", {}).get("spec")
+            if spec is None:
+                continue
+            spec["ingressClassName"] = ingress_class
+            updated = True
+    if not updated:
+        fail("No 'ingress' resource found in WebApp YAML")
+    with open(path, "w") as f:
+        yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
+    log("  ✓ WebApp ingress YAML updated")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -162,6 +183,7 @@ def main():
     p.add_argument("identity_yaml", help="Path to identity YAML file")
     p.add_argument("db_yaml", help="Path to DbWebStack YAML file (instance.yaml)")
     p.add_argument("web_yaml", help="Path to WebStack YAML file")
+    p.add_argument("webapp_yaml", help="Path to WebApp ResourceGraphDefinition YAML file")
     p.add_argument("--cluster", default="kro", help="EKS cluster name")
     p.add_argument("--region", required=True, help="AWS region")
     p.add_argument(
@@ -176,9 +198,13 @@ def main():
         "--web-tag", default="web-latest",
         help="Tag to append to the WebStack image URI"
     )
+    p.add_argument(
+        "--ingress-class", default="alb",
+        help="Value to set for ingressClassName in WebApp ingress"
+    )
     args = p.parse_args()
 
-    for f in (args.network_yaml, args.identity_yaml, args.db_yaml, args.web_yaml):
+    for f in (args.network_yaml, args.identity_yaml, args.db_yaml, args.web_yaml, args.webapp_yaml):
         if not os.path.exists(f):
             fail(f"File not found: {f}")
 
@@ -195,6 +221,7 @@ def main():
         update_identity_yaml(args.identity_yaml, args.cluster)
         update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, args.ecr_tag)
         update_webstack_yaml(args.web_yaml, args.ecr_repo_uri, args.web_tag)
+        update_webapp_ingress_yaml(args.webapp_yaml, args.ingress_class)
 
         log("✅ All updates completed successfully.")
     except Exception as e:
