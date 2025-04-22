@@ -1,0 +1,16 @@
+apiVersion: kro.run/v1alpha1
+kind: DbWebStack
+metadata:
+  name: webapp-instance-16-04
+spec:
+  applicationName: "webapp-16-04"
+  name: "webapp-16-04"
+  image: "038719561591.dkr.ecr.us-west-2.amazonaws.com/krmops-ecr-repo:rds-latest"
+  port: 8080
+  replicas: 2
+  service:
+    enabled: true
+  rds:
+    enabled: true
+    awsRegion: us-west-2
+

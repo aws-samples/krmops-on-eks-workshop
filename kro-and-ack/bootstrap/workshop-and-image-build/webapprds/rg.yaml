@@ -1,0 +1,75 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: webapp.rds.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: WebAppRds
+    spec:
+      name: string
+      namespace: string | default=default
+      image: string | default=nginx
+      port: integer | default=8080
+      replicas: integer | default=1
+      service:
+        enabled: boolean | default=true
+      serviceAccount: string | default=default
+      rds:
+        enabled: boolean | default=false
+        image: string   
+        replicas: integer | default=1
+        dbHost: string                                
+        dbName: string | default="testdb"
+    status:
+      availableReplicas: ${rdsdeployment.status.availableReplicas}
+
+  resources:
+  # --- RDS Deployment (only included when rds.enabled is true) ---
+  - id: rdsdeployment
+    includeWhen:
+      - ${schema.spec.rds.enabled}
+    readyWhen:
+      - ${rdsdeployment.spec.replicas == rdsdeployment.status.availableReplicas}
+    template:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ${schema.spec.name}-rdsdeployment
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-rds
+      spec:
+        replicas: ${schema.spec.rds.replicas}
+        selector:
+          matchLabels:
+            app: ${schema.spec.name}-rds
+        template:
+          metadata:
+            labels:
+              app: ${schema.spec.name}-rds
+          spec:
+            serviceAccountName: ${schema.spec.serviceAccount}
+            containers:
+            - name: rds-demo
+              image: ${schema.spec.rds.image}
+              imagePullPolicy: Always
+              ports:
+              - containerPort: ${schema.spec.port}
+              env:
+              - name: DB_HOST
+                value: ${schema.spec.rds.dbHost}
+              - name: DB_NAME
+                value: ${schema.spec.rds.dbName}
+              volumeMounts:
+              - mountPath: /mnt/secrets-store
+                name: dbsecret
+                readOnly: true
+            restartPolicy: Always
+            volumes:
+            - name: dbsecret
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes:
+                  secretProviderClass: ${schema.spec.name}-aws-secrets

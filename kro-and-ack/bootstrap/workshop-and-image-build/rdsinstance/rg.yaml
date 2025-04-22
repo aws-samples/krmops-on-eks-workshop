@@ -1,0 +1,81 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: rds.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: RdsInstance
+    spec:
+      awsAccountID: integer
+      awsRegion: string
+      dbEngine: string
+      environment: string
+      namespace: string
+      applicationName: string
+    status:
+      endpointAddress: ${awsDatabase.status.endpoint.address}
+      secretARN: ${awsDatabase.status.masterUserSecret.secretARN}
+  resources:
+    - id: subnetGroup
+      template:
+        apiVersion: rds.services.k8s.aws/v1alpha1
+        kind: DBSubnetGroup
+        metadata:
+          name: db-subnet-group-${schema.spec.applicationName}
+        spec:
+          description: db test
+          name: db-sb-${schema.spec.applicationName}
+          subnetIDs:
+            - subnet-0abe19d5bafacb21c
+            - subnet-00f84d043e99aa90e
+    - id: securityGroup
+      template:
+        apiVersion: ec2.services.k8s.aws/v1alpha1
+        kind: SecurityGroup
+        metadata:
+          name: db-security-group-${schema.spec.applicationName}
+        spec:
+          vpcID: vpc-0d981774c0f2905f7
+          name: db-sg-${schema.spec.applicationName}
+          description: inress mysql rule
+          ingressRules:
+            - fromPort: 3306
+              toPort: 3306
+              ipProtocol: TCP
+              ipRanges:
+                - cidrIP: 10.0.0.0/16
+                  description: db test
+    - id: awsDatabase
+      template:
+        apiVersion: rds.services.k8s.aws/v1alpha1
+        kind: DBInstance
+        metadata:
+          name: ${schema.spec.applicationName}-db-${schema.spec.environment}
+        spec:
+          manageMasterUserPassword: true
+          masterUsername: testUser
+          allocatedStorage: 10
+          dbInstanceClass: db.t4g.micro
+          dbInstanceIdentifier: ${schema.spec.applicationName}-db-${schema.spec.environment}
+          engine: ${schema.spec.dbEngine}
+          engineVersion: '8.0'
+          dbSubnetGroupName: db-sb-${schema.spec.applicationName}
+          vpcSecurityGroupIDs:
+            - ${securityGroup.status.id}
+    - id: secretProviderClass
+      includeWhen:
+      - ${schema.spec.rds.enabled}
+      template:
+        apiVersion: secrets-store.csi.x-k8s.io/v1
+        kind: SecretProviderClass
+        metadata:
+          name: ${schema.spec.applicationName}-aws-secrets
+        spec:
+          provider: aws
+          parameters:
+            objects: |
+              - objectName: "${awsDatabase.status.secretARN}"
+                objectType: "secretsmanager"
+                objectAlias: "dbsecret"
+            usePodIdentity: "true"

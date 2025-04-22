@@ -1,0 +1,74 @@
+
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: db-webstack.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: DbWebStack
+    spec:
+      name: string
+      applicationName: string
+      clusterName: string | default="kro"
+      image: string
+      port: integer | default=8080
+      replicas: integer | default=1
+      service:
+        enabled: boolean | default=true
+      rds:
+        enabled: boolean | default=false
+        dbEngine: string | default="mysql"
+        environment: string | default="dev"
+        awsAccountID: integer
+        awsRegion: string
+    status:
+      deploymentConditions: ${webapp.status.conditions}
+      availableReplicas: ${webapp.status.availableReplicas}
+
+  resources:
+  - id: webapp
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: WebAppRds
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        name: ${schema.spec.name}
+        image: ${schema.spec.image}
+        port: ${schema.spec.port}
+        replicas: ${schema.spec.replicas}
+        serviceAccount: ${podidentity.status.serviceAccount}
+        service:
+          enabled: ${schema.spec.service.enabled}
+        rds:
+          enabled: ${schema.spec.rds.enabled}
+          image: ${schema.spec.image}
+          replicas: 1
+          dbHost: ${awsDatabase.status.endpointAddress}
+          dbName: "testdb"
+
+  - id: podidentity
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: PodIdentity
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        name: ${schema.spec.name}
+        policyARN: "arn:aws:iam::aws:policy/AdministratorAccess"
+
+  - id: awsDatabase
+    includeWhen:
+    - ${schema.spec.rds.enabled}
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: RdsInstance
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        awsRegion: ${schema.spec.rds.awsRegion}
+        dbEngine: ${schema.spec.rds.dbEngine}
+        environment: ${schema.spec.rds.environment}
+        namespace: default
+        applicationName: ${schema.spec.name}
