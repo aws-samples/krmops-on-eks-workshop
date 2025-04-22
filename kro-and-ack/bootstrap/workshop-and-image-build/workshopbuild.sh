@@ -108,7 +108,7 @@ yes | sudo dnf install python3-pip
 
 sudo pip3 install boto3
 
-python3 update_yaml.py rdsinstance/rg.yaml \
+python3 /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/kro-and-ack/bootstrap/workshop-and-image-build/update_yaml.py rdsinstance/rg.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/podidenity/rg.yaml \
     rdswebstack/instance.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/webstack/instance-tmpl.yaml \
@@ -118,9 +118,6 @@ python3 update_yaml.py rdsinstance/rg.yaml \
     --ecr-tag rds-latest \
     --web-tag s3-latest
 
-
-python3 yamlvars.py rds-rg.yaml /home/ec2-user/environment/krmops-on-eks/kro/podidenity/rg.yaml instance-rds.yaml /home/ec2-user/environment/krmops-on-eks/kro/webstack/instance-tmpl.yaml \--region us-west-2 --cluster krmops-on-eks  --ecr-repo-uri test --ecr-tag test --web-tag web-latest 
-#python3 yamlvars.py rds-rg.yaml /home/ec2-user/environment/krmops-on-eks/kro/podidenity/rg.yaml instance-rds.yaml \--region us-west-2 --cluster krmops-on-eks  --ecr-repo-uri test --ecr-tag test
 cp -R rdsinstance /home/ec2-user/environment/krmops-on-eks/kro
 cp -R rdswebstack /home/ec2-user/environment/krmops-on-eks/kro
 cp -R webapprds /home/ec2-user/environment/krmops-on-eks/kro
