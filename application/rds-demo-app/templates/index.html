@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Files List</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='s3_favicon.png') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>Files List</h1>
+        <form id="itemForm">
+            <input type="text" id="fileName" placeholder="Enter file name" required>
+            <input type="text" id="fileContent" placeholder="Enter file content" required>
+            <button type="submit">Add Item</button>
+        </form>
+        <ul id="itemList"></ul>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const form = document.getElementById('itemForm');
+            const itemList = document.getElementById('itemList');
+
+            // Function to fetch items from the server
+            function fetchItems() {
+                fetch('/items')
+                    .then(response => response.json())
+                    .then(data => {
+                        itemList.innerHTML = '';
+                        data.forEach(item => {
+                            const li = document.createElement('li');
+                            const h3 = document.createElement('h3');
+                            h3.textContent = item.name;
+                            const p = document.createElement('p');
+                            p.textContent = item.content;
+                            const deleteButton = document.createElement('button');
+                            deleteButton.textContent = 'Delete';
+                            deleteButton.classList.add('delete-btn');
+                            deleteButton.addEventListener('click', () => deleteItem(item.name));
+                            li.appendChild(h3);
+                            li.appendChild(p);
+                            li.appendChild(deleteButton);
+                            itemList.appendChild(li);
+                        });
+                    });
+            }
+
+            // Function to delete an item
+            function deleteItem(fileName) {
+                fetch(`/items/${fileName}`, {
+                    method: 'DELETE'
+                })
+                    .then(response => {
+                        if (response.ok) {
+                            fetchItems();
+                        } else {
+                            alert('Failed to delete item');
+                        }
+                    });
+            }
+
+            // Load items when the page is loaded
+            fetchItems();
+
+            // Handle form submission
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+
+                const fileName = document.getElementById('fileName').value;
+                const fileContent = document.getElementById('fileContent').value;
+                if (fileName) {
+                    fetch('/items', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ name: fileName, content: fileContent })
+                    })
+                        .then(response => {
+                            if (response.ok) {
+                                document.getElementById('fileName').value = '';
+                                document.getElementById('fileContent').value = '';
+                                fetchItems();
+                            } else {
+                                alert('Failed to add item');
+                            }
+                        });
+                }
+            });
+        });
+    </script>
+</body>
+
+</html>
