@@ -122,6 +122,7 @@ python3 /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/kro-and-
 cp -R rdsinstance /home/ec2-user/environment/krmops-on-eks/kro
 cp -R rdswebstack /home/ec2-user/environment/krmops-on-eks/kro
 cp -R webapprds /home/ec2-user/environment/krmops-on-eks/kro
+cp -R s3adopt /home/ec2-user/environment/krmops-on-eks/kro
 
 # ========================================
 # Find the first IAM role that starts with "ack-rds-"
