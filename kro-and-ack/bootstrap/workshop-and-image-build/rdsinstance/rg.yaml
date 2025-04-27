@@ -64,8 +64,6 @@ spec:
           vpcSecurityGroupIDs:
             - ${securityGroup.status.id}
     - id: secretProviderClass
-      includeWhen:
-      - ${schema.spec.rds.enabled}
       template:
         apiVersion: secrets-store.csi.x-k8s.io/v1
         kind: SecretProviderClass
@@ -75,7 +73,7 @@ spec:
           provider: aws
           parameters:
             objects: |
-              - objectName: "${awsDatabase.status.secretARN}"
+              - objectName: "${awsDatabase.status.masterUserSecret.secretARN}"
                 objectType: "secretsmanager"
                 objectAlias: "dbsecret"
             usePodIdentity: "true"
