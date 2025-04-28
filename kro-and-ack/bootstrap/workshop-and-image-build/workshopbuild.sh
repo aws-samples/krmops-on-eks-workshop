@@ -239,3 +239,10 @@ echo "Secrets Manager Policy ARN: $SM_POLICY_ARN"
 
 su ec2-user -c 'kubectl apply -f ingress/ingressClass.yaml'
 su ec2-user -c 'kubectl apply -f ingress/ingressClassParams.yaml'
+
+# ========================================
+# S3 adopt bucket creation
+# ========================================
+
+export BUCKET_NAME=s3adopt-$ACCOUNT_ID
+aws s3 mb s3://$BUCKET_NAME --region $REGION
