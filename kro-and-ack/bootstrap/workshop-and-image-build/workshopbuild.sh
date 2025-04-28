@@ -233,6 +233,10 @@ echo "Secrets Manager Policy ARN: $SM_POLICY_ARN"
  su ec2-user -c 'helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts'
  su ec2-user -c 'helm install -n kube-system csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver'
 
+ kubectl apply -f \
+  https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
+
+
 # ========================================
 # Apply ingress class
 # ========================================
