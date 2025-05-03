@@ -125,7 +125,7 @@ def update_identity_yaml(path: str, cluster_name: str):
     log("  ✓ identity YAML updated")
 
 
-def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest"):
+def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest", region: str = None):
     log(f"Updating DbWebStack YAML: {path}")
     with open(path) as f:
         doc = yaml.safe_load(f)
@@ -133,6 +133,9 @@ def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest"):
         fail(f"{path} is not a DbWebStack resource")
     full_image = f"{repo_uri}:{tag}" 
     doc["spec"]["image"] = full_image
+    # Update the region field if region is provided
+    if region and "rds" in doc["spec"] and doc["spec"]["rds"].get("enabled", False):
+        doc["spec"]["rds"]["awsRegion"] = region
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ DbWebStack YAML updated")
@@ -219,7 +222,7 @@ def main():
 
         update_network_yaml(args.network_yaml, vpc_id, cidr, priv_subs)
         update_identity_yaml(args.identity_yaml, args.cluster)
-        update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, args.ecr_tag)
+        update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, args.ecr_tag, args.region)
         update_webstack_yaml(args.web_yaml, args.ecr_repo_uri, args.web_tag)
         update_webapp_ingress_yaml(args.webapp_yaml, args.ingress_class)
 
