@@ -25,7 +25,6 @@ class CustomDumper(yaml.SafeDumper):
 # Register representers on CustomDumper
 CustomDumper.add_representer(LiteralString, literal_representer)
 CustomDumper.add_multi_representer(str, SafeRepresenter.represent_str)
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Logging helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -36,6 +35,7 @@ def log(msg):
 def fail(msg):
     print(f"[ERROR] {msg}")
     sys.exit(1)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # AWS interactions
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,25 +71,11 @@ def get_private_subnets(subnet_ids: list, region: str):
 # YAML‑update functions
 # ──────────────────────────────────────────────────────────────────────────────
 
+# This function is kept for compatibility with the original script's interface
+# but is modified to be a no-op since we're passing network info through instance.yaml
 def update_network_yaml(path: str, vpc_id: str, cidr: str, subnets: list):
-    log(f"Updating network YAML: {path}")
-    with open(path) as f:
-        doc = yaml.safe_load(f)
-    if doc.get("kind") != "ResourceGraphDefinition":
-        fail(f"{path} is not a ResourceGraphDefinition")
-    for r in doc["spec"].get("resources", []):
-        if r.get("id") == "securityGroup":
-            spec = r["template"]["spec"]
-            spec["vpcID"] = vpc_id
-            for rule in spec.get("ingressRules", []):
-                for ipr in rule.get("ipRanges", []):
-                    ipr["cidrIP"] = cidr
-        elif r.get("id") == "subnetGroup":
-            r["template"]["spec"]["subnetIDs"] = subnets
-    with open(path, "w") as f:
-        yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
-    log("  ✓ network YAML updated")
-
+    log(f"Network YAML updates now handled through DbWebStack: {path}")
+    # No-op as we're now passing network info through instance.yaml
 
 def update_identity_yaml(path: str, cluster_name: str):
     log(f"Updating identity YAML: {path}")
@@ -121,7 +107,7 @@ def update_identity_yaml(path: str, cluster_name: str):
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ identity YAML updated")
-def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest", region: str = None):
+def update_dbwebstack_yaml(path: str, repo_uri: str, vpc_id: str, cidr: str, subnets: list, tag: str = "rds-latest", region: str = None):
     log(f"Updating DbWebStack YAML: {path}")
     with open(path) as f:
         doc = yaml.safe_load(f)
@@ -129,9 +115,14 @@ def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest", re
         fail(f"{path} is not a DbWebStack resource")
     full_image = f"{repo_uri}:{tag}" 
     doc["spec"]["image"] = full_image
+    
     # Update the region field if region is provided
     if region and "rds" in doc["spec"] and doc["spec"]["rds"].get("enabled", False):
         doc["spec"]["rds"]["awsRegion"] = region
+        doc["spec"]["rds"]["vpcID"] = vpc_id
+        doc["spec"]["rds"]["cidrIP"] = cidr
+        doc["spec"]["rds"]["subnetIDs"] = subnets
+    
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ DbWebStack YAML updated")
@@ -178,7 +169,7 @@ def main():
     p = argparse.ArgumentParser(
         description="Sync multiple KRO YAMLs with EKS and ECR info"
     )
-    p.add_argument("network_yaml", help="Path to network YAML file")
+    p.add_argument("network_yaml", help="Path to network YAML file (no longer used but kept for compatibility)")
     p.add_argument("identity_yaml", help="Path to identity YAML file")
     p.add_argument("db_yaml", help="Path to DbWebStack YAML file (instance.yaml)")
     p.add_argument("web_yaml", help="Path to WebStack YAML file")
@@ -203,7 +194,7 @@ def main():
     )
     args = p.parse_args()
 
-    for f in (args.network_yaml, args.identity_yaml, args.db_yaml, args.web_yaml, args.webapp_yaml):
+    for f in (args.identity_yaml, args.db_yaml, args.web_yaml, args.webapp_yaml):
         if not os.path.exists(f):
             fail(f"File not found: {f}")
 
@@ -216,9 +207,10 @@ def main():
         cidr = get_vpc_cidr(vpc_id, args.region)
         priv_subs = get_private_subnets(all_subnets, args.region)
 
+        # Network YAML is no longer updated directly
         update_network_yaml(args.network_yaml, vpc_id, cidr, priv_subs)
         update_identity_yaml(args.identity_yaml, args.cluster)
-        update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, args.ecr_tag, args.region)
+        update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, vpc_id, cidr, priv_subs, args.ecr_tag, args.region)
         update_webstack_yaml(args.web_yaml, args.ecr_repo_uri, args.web_tag, args.cluster)
         update_webapp_ingress_yaml(args.webapp_yaml, args.ingress_class)
 

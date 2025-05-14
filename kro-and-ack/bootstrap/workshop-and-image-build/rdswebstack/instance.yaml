@@ -13,4 +13,6 @@ spec:
   rds:
     enabled: true
     awsRegion: us-west-2
-
+    vpcID: ""
+    cidrIP: ""
+    subnetIDs: []

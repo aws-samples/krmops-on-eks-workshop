@@ -1,4 +1,3 @@
-
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
@@ -22,6 +21,9 @@ spec:
         environment: string | default="dev"
         awsAccountID: integer
         awsRegion: string
+        vpcID: string
+        cidrIP: string
+        subnetIDs: array
     status:
       deploymentConditions: ${webapp.status.conditions}
       availableReplicas: ${webapp.status.availableReplicas}
@@ -72,3 +74,6 @@ spec:
         environment: ${schema.spec.rds.environment}
         namespace: default
         applicationName: ${schema.spec.name}
+        vpcID: ${schema.spec.rds.vpcID}
+        cidrIP: ${schema.spec.rds.cidrIP}
+        subnetIDs: ${schema.spec.rds.subnetIDs}

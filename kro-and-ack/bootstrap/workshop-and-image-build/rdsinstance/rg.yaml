@@ -13,6 +13,9 @@ spec:
       environment: string
       namespace: string
       applicationName: string
+      vpcID: string
+      cidrIP: string
+      subnetIDs: array
     status:
       endpointAddress: ${awsDatabase.status.endpoint.address}
       secretARN: ${awsDatabase.status.masterUserSecret.secretARN}
@@ -26,9 +29,7 @@ spec:
         spec:
           description: db test
           name: db-sb-${schema.spec.applicationName}
-          subnetIDs:
-            - subnet-0abe19d5bafacb21c
-            - subnet-00f84d043e99aa90e
+          subnetIDs: ${schema.spec.subnetIDs}
     - id: securityGroup
       template:
         apiVersion: ec2.services.k8s.aws/v1alpha1
@@ -36,7 +37,7 @@ spec:
         metadata:
           name: db-security-group-${schema.spec.applicationName}
         spec:
-          vpcID: vpc-0d981774c0f2905f7
+          vpcID: ${schema.spec.vpcID}
           name: db-sg-${schema.spec.applicationName}
           description: inress mysql rule
           ingressRules:
@@ -44,7 +45,7 @@ spec:
               toPort: 3306
               ipProtocol: TCP
               ipRanges:
-                - cidrIP: 10.0.0.0/16
+                - cidrIP: ${schema.spec.cidrIP}
                   description: db test
     - id: awsDatabase
       template:
