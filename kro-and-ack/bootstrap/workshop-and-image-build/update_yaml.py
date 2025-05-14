@@ -36,7 +36,6 @@ def log(msg):
 def fail(msg):
     print(f"[ERROR] {msg}")
     sys.exit(1)
-
 # ──────────────────────────────────────────────────────────────────────────────
 # AWS interactions
 # ──────────────────────────────────────────────────────────────────────────────
@@ -68,7 +67,6 @@ def get_private_subnets(subnet_ids: list, region: str):
     if len(priv) < 2:
         raise Exception("Not enough private subnets found")
     return priv[:2]
-
 # ──────────────────────────────────────────────────────────────────────────────
 # YAML‑update functions
 # ──────────────────────────────────────────────────────────────────────────────
@@ -123,8 +121,6 @@ def update_identity_yaml(path: str, cluster_name: str):
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ identity YAML updated")
-
-
 def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest", region: str = None):
     log(f"Updating DbWebStack YAML: {path}")
     with open(path) as f:
@@ -141,7 +137,7 @@ def update_dbwebstack_yaml(path: str, repo_uri: str, tag: str = "rds-latest", re
     log("  ✓ DbWebStack YAML updated")
 
 
-def update_webstack_yaml(path: str, repo_uri: str, tag: str):
+def update_webstack_yaml(path: str, repo_uri: str, tag: str, cluster: str = None):
     log(f"Updating WebStack YAML: {path}")
     with open(path) as f:
         doc = yaml.safe_load(f)
@@ -149,11 +145,12 @@ def update_webstack_yaml(path: str, repo_uri: str, tag: str):
         fail(f"{path} is not a WebStack resource")
     full_image = f"{repo_uri}:{tag}"
     doc["spec"]["image"] = full_image
+    # Update the clusterName field if cluster is provided
+    if cluster:
+        doc["spec"]["clusterName"] = cluster
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ WebStack YAML updated")
-
-
 def update_webapp_ingress_yaml(path: str, ingress_class: str = "alb"):
     log(f"Updating WebApp ingress in YAML: {path}")
     with open(path) as f:
@@ -173,7 +170,6 @@ def update_webapp_ingress_yaml(path: str, ingress_class: str = "alb"):
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ WebApp ingress YAML updated")
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -223,7 +219,7 @@ def main():
         update_network_yaml(args.network_yaml, vpc_id, cidr, priv_subs)
         update_identity_yaml(args.identity_yaml, args.cluster)
         update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, args.ecr_tag, args.region)
-        update_webstack_yaml(args.web_yaml, args.ecr_repo_uri, args.web_tag)
+        update_webstack_yaml(args.web_yaml, args.ecr_repo_uri, args.web_tag, args.cluster)
         update_webapp_ingress_yaml(args.webapp_yaml, args.ingress_class)
 
         log("✅ All updates completed successfully.")
