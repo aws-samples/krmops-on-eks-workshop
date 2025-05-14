@@ -23,7 +23,7 @@ spec:
         awsRegion: string
         vpcID: string
         cidrIP: string
-        subnetIDs: array
+        subnetIDs: "[]string"
     status:
       deploymentConditions: ${webapp.status.conditions}
       availableReplicas: ${webapp.status.availableReplicas}

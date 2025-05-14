@@ -15,7 +15,8 @@ spec:
       applicationName: string
       vpcID: string
       cidrIP: string
-      subnetIDs: array
+      subnetIDs: "[]string"
+
     status:
       endpointAddress: ${awsDatabase.status.endpoint.address}
       secretARN: ${awsDatabase.status.masterUserSecret.secretARN}
