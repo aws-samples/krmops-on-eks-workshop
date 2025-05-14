@@ -19,6 +19,7 @@ spec:
     status:
       endpointAddress: ${awsDatabase.status.endpoint.address}
       secretARN: ${awsDatabase.status.masterUserSecret.secretARN}
+      secretPolicyARN: ${secretManagerPolicy.status.ackResourceMetadata.arn}
   resources:
     - id: subnetGroup
       template:
@@ -64,6 +65,37 @@ spec:
           dbSubnetGroupName: db-sb-${schema.spec.applicationName}
           vpcSecurityGroupIDs:
             - ${securityGroup.status.id}
+    - id: secretManagerPolicy
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Policy
+        metadata:
+          name: ${schema.spec.applicationName}-secretsmanager-policy
+        spec:
+          name: ${schema.spec.applicationName}-secretsmanager-policy
+          policyDocument: |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "secretsmanager:GetSecretValue",
+                    "secretsmanager:DescribeSecret"
+                  ],
+                  "Resource": [
+                    "${awsDatabase.status.masterUserSecret.secretARN}"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "secretsmanager:ListSecrets"
+                  ],
+                  "Resource": ["*"]
+                }
+              ]
+            }
     - id: secretProviderClass
       template:
         apiVersion: secrets-store.csi.x-k8s.io/v1

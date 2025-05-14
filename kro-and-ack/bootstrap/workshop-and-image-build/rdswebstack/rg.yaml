@@ -58,7 +58,7 @@ spec:
         name: ${schema.spec.name}
       spec:
         name: ${schema.spec.name}
-        policyARN: "arn:aws:iam::aws:policy/AdministratorAccess"
+        policyARN: ${awsDatabase.status.secretPolicyARN}
 
   - id: awsDatabase
     includeWhen:
