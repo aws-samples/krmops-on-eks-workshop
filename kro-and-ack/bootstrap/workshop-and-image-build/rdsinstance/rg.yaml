@@ -50,6 +50,8 @@ spec:
                 - cidrIP: ${schema.spec.cidrIP}
                   description: db test
     - id: awsDatabase
+      readyWhen:
+      - ${awsDatabase.status.conditions.exists(x, x.type == 'ACK.ResourceSynced' && x.status == "True")}
       template:
         apiVersion: rds.services.k8s.aws/v1alpha1
         kind: DBInstance

@@ -88,13 +88,17 @@ module "kro" {
   namespace        = "kro"
   create_namespace = true
   chart            = "kro"
-  chart_version    = "0.2.2"
+  chart_version    = "0.3.0"
   repository       = "oci://ghcr.io/kro-run/kro"
-  # Set individual values directly
+
   set = [
     {
-      name  = "dynamicControllerDefaultResyncPeriod"
+      name  = "config.dynamicControllerDefaultResyncPeriod"
       value = "180"
+    },
+    {
+      name  = "config.dynamicControllerConcurrentReconciles"
+      value = "20"
     }
   ]
 }
