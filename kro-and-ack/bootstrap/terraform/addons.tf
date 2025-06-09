@@ -90,4 +90,11 @@ module "kro" {
   chart            = "kro"
   chart_version    = "0.2.2"
   repository       = "oci://ghcr.io/kro-run/kro"
+  # Set individual values directly
+  set = [
+    {
+      name  = "dynamicControllerDefaultResyncPeriod"
+      value = "180"
+    }
+  ]
 }
