@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="80px" height="80px" viewBox="0 0 80 80" version="1.1" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <path d="M40,5 C25,5 15,12 15,20 L15,30 L15,50 L15,60 C15,68 25,75 40,75 C55,75 65,68 65,60 L65,50 L65,30 L65,20 C65,12 55,5 40,5 Z M40,10 C52,10 60,15 60,20 C60,25 52,30 40,30 C28,30 20,25 20,20 C20,15 28,10 40,10 Z M40,35 C52,35 60,40 60,45 L60,55 C60,60 52,65 40,65 C28,65 20,60 20,55 L20,45 C20,40 28,35 40,35 Z" fill="#3B48CC" fill-rule="nonzero"></path>
+    </g>
+</svg>

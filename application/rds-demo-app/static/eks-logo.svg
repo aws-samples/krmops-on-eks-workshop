@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="80px" height="80px" viewBox="0 0 80 80" version="1.1" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <path d="M40,5 L10,20 L10,60 L40,75 L70,60 L70,20 L40,5 Z M60,25 L40,15 L20,25 L40,35 L60,25 Z M20,40 L40,50 L40,70 L20,60 L20,40 Z M60,40 L60,60 L40,70 L40,50 L60,40 Z" fill="#FF9900" fill-rule="nonzero"></path>
+    </g>
+</svg>
