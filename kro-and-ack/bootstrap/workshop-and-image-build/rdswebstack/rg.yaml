@@ -29,7 +29,41 @@ spec:
       availableReplicas: ${webapp.status.availableReplicas}
 
   resources:
+  - id: awsDatabase
+    includeWhen:
+    - ${schema.spec.rds.enabled}
+    readyWhen:
+      - "${has(awsDatabase.status.endpointAddress) && has(awsDatabase.status.secretPolicyARN)}"
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: RdsInstance
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        awsRegion: ${schema.spec.rds.awsRegion}
+        dbEngine: ${schema.spec.rds.dbEngine}
+        environment: ${schema.spec.rds.environment}
+        namespace: default
+        applicationName: ${schema.spec.name}
+        vpcID: ${schema.spec.rds.vpcID}
+        cidrIP: ${schema.spec.rds.cidrIP}
+        subnetIDs: ${schema.spec.rds.subnetIDs}
+  
+  - id: podidentity
+    readyWhen:
+      - "${has(podidentity.status.serviceAccount) && size(podidentity.status.serviceAccount) > 0}"
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: PodIdentity
+      metadata:
+        name: ${schema.spec.name}
+      spec:
+        name: ${schema.spec.name}
+        policyARN: ${awsDatabase.status.secretPolicyARN}
+
   - id: webapp
+    readyWhen:
+      - "${has(webapp.status.availableReplicas) && webapp.status.availableReplicas > 0}"
     template:
       apiVersion: kro.run/v1alpha1
       kind: WebAppRds
@@ -50,30 +84,3 @@ spec:
           dbHost: ${awsDatabase.status.endpointAddress}
           dbName: "testdb"
 
-  - id: podidentity
-    template:
-      apiVersion: kro.run/v1alpha1
-      kind: PodIdentity
-      metadata:
-        name: ${schema.spec.name}
-      spec:
-        name: ${schema.spec.name}
-        policyARN: ${awsDatabase.status.secretPolicyARN}
-
-  - id: awsDatabase
-    includeWhen:
-    - ${schema.spec.rds.enabled}
-    template:
-      apiVersion: kro.run/v1alpha1
-      kind: RdsInstance
-      metadata:
-        name: ${schema.spec.name}
-      spec:
-        awsRegion: ${schema.spec.rds.awsRegion}
-        dbEngine: ${schema.spec.rds.dbEngine}
-        environment: ${schema.spec.rds.environment}
-        namespace: default
-        applicationName: ${schema.spec.name}
-        vpcID: ${schema.spec.rds.vpcID}
-        cidrIP: ${schema.spec.rds.cidrIP}
-        subnetIDs: ${schema.spec.rds.subnetIDs}
