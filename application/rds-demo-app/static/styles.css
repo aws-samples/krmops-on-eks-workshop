@@ -224,11 +224,11 @@ input:disabled, textarea:disabled {
 }
 
 .eks-icon {
-    background-image: url('eks-logo.svg');
+    background-image: url('eks-image.png');
 }
 
 .rds-icon {
-    background-image: url('rds-logo.svg');
+    background-image: url('rds-image.png');
 }
 
 .label {
