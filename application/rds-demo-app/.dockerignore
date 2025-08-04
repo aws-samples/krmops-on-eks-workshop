@@ -1,0 +1,18 @@
+# Ignore local development files
+run_local.py
+local_config.py
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.git
+.gitignore
+README.md
+
+# Keep these important files
+!static/
+!templates/
+!app.py
+!requirements.txt

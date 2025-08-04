@@ -73,3 +73,60 @@ spec:
                 readOnly: true
                 volumeAttributes:
                   secretProviderClass: ${schema.spec.name}-aws-secrets
+
+  # --- Service for RDS App ---
+  - id: rdsservice
+    includeWhen:
+      - ${schema.spec.service.enabled}
+      - ${schema.spec.rds.enabled}
+    readyWhen:
+      - ${has(rdsservice.spec.clusterIP)}
+    template:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ${schema.spec.name}-rdsservice
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-rds
+      spec:
+        selector:
+          app: ${schema.spec.name}-rds
+        ports:
+        - port: 80
+          targetPort: ${schema.spec.port}
+          protocol: TCP
+        type: ClusterIP
+
+  # --- Ingress for ALB ---
+  - id: rdsingress
+    includeWhen:
+      - ${schema.spec.service.enabled}
+      - ${schema.spec.rds.enabled}
+    readyWhen:
+      - ${has(rdsingress.status.loadBalancer)}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-rdsingress
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-rds
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.name}-rdsservice
+                  port:
+                    number: 80

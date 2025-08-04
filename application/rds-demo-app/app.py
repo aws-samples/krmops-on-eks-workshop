@@ -130,6 +130,21 @@ def add_item():
         return jsonify({'message': 'Item added successfully'}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+        
+@app.route('/items/<int:item_id>', methods=['DELETE'])
+def delete_item(item_id):
+    if not connection:
+        return jsonify({'error': 'No DB connection'}), 500
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM items WHERE id = %s", (item_id,))
+        connection.commit()
+        if cursor.rowcount > 0:
+            return jsonify({'message': 'Item deleted successfully'}), 200
+        else:
+            return jsonify({'error': 'Item not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
