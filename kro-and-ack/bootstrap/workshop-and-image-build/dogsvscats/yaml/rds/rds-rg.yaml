@@ -1,0 +1,80 @@
+apiVersion: x.symphony.k8s.aws/v1alpha1
+kind: ResourceGroup
+metadata:
+  name: rds.x.symphony.k8s.aws
+spec:
+  apiVersion: v1alpha1
+  kind: rds
+  definition:
+    spec:
+      name: string
+      namespace: 'string | default="default"'
+      region: 'string | default="us-east-1"'
+      clusterName: string
+      subnetIDs: '[]string | default=["subnet-04914ecd2537b8075","subnet-04914ecd2537b8075","subnet-0dbdfae4be6fad7d6"]'
+      vpcID: 'string | default="vpc-09ee084f75f1e580f"'
+  resources:
+  - name: secret
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: ${spec.name}-password
+        namespace: default
+      type: Opaque
+      data:
+        password: cG9zdGdyZXM= #postgres
+  - name: securitygroup
+    definition:
+      apiVersion: ec2.services.k8s.aws/v1alpha1
+      kind: SecurityGroup
+      metadata:
+        name: ${spec.name}-sg
+        namespace: default
+      spec:
+        description: SecurityGroup
+        name: ${spec.name}-sg
+        vpcID: ${spec.vpcID}
+        ingressRules:
+        - ipProtocol: tcp
+          ipRanges:
+          - cidrIP: "10.0.0.0/16"
+          fromPort: 5432
+          toPort: 5432
+  - name: dbsubnetgroup
+    definition:
+      apiVersion: rds.services.k8s.aws/v1alpha1
+      kind: DBSubnetGroup
+      metadata:
+        name: ${spec.name}-db-sg
+        namespace: default
+      spec:
+        description: DBSubnet group
+        name: ${spec.name}-db-sg
+        subnetIDs: ${spec.subnetIDs}
+  - name: dbinstance
+    definition:
+      apiVersion: rds.services.k8s.aws/v1alpha1
+      kind: DBInstance
+      metadata:
+        name: ${spec.name}-rds
+        namespace: default
+      spec:
+        allocatedStorage: 20
+        dbInstanceClass: db.t4g.micro
+        dbInstanceIdentifier: voting-results
+        backupRetentionPeriod: 0
+        engine: postgres
+        engineVersion: "16.3"
+        masterUsername: "postgres"
+        dbSubnetGroupRef: 
+          from: 
+            name: rds-subnet-group
+        vpcSecurityGroupRefs:
+          - from: 
+              name: rds-sg
+        masterUserPassword:
+          namespace: default
+          name: rds-password
+          key: password
+        dbName: postgres

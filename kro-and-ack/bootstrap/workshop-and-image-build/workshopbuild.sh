@@ -51,6 +51,9 @@ echo "Detected Region: $REGION"
 # Name for your local Docker image and the ECR repository
 S3_IMAGE_NAME="s3-app"         # Change as appropriate
 RDS_IMAGE_NAME="rds-app"         # Change as appropriate
+VOTE_IMAGE_NAME="vote-app"       # Dogs vs Cats voting app
+RESULT_IMAGE_NAME="result-app"   # Dogs vs Cats result app
+WORKER_IMAGE_NAME="worker-app"   # Dogs vs Cats worker app
 REPO_NAME="krmops-ecr-repo"       # Change as appropriate
 
 # =========================================
@@ -62,6 +65,15 @@ sudo docker build -t ${S3_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-o
 
 echo "Building Docker image: ${RDS_IMAGE_NAME}:latest"
 sudo docker build -t ${RDS_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/rds-demo-app/.
+
+echo "Building Docker image: ${VOTE_IMAGE_NAME}:latest"
+sudo docker build -t ${VOTE_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/dogsvscats/voting-app/vote/.
+
+echo "Building Docker image: ${RESULT_IMAGE_NAME}:latest"
+sudo docker build -t ${RESULT_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/dogsvscats/voting-app/result/.
+
+echo "Building Docker image: ${WORKER_IMAGE_NAME}:latest"
+sudo docker build -t ${WORKER_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/dogsvscats/voting-app/worker/.
 
 # =========================================
 # Create an ECR Repository (if it doesn't exist)
@@ -95,11 +107,23 @@ sudo docker tag ${S3_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:s3-latest
 echo "Tagging the image as ${ECR_IMAGE_URI}:rds-latest"
 sudo docker tag ${RDS_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:rds-latest
 
-echo "Pushing the image to ECR..."
+echo "Tagging the image as ${ECR_IMAGE_URI}:vote-latest"
+sudo docker tag ${VOTE_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:vote-latest
+
+echo "Tagging the image as ${ECR_IMAGE_URI}:result-latest"
+sudo docker tag ${RESULT_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:result-latest
+
+echo "Tagging the image as ${ECR_IMAGE_URI}:worker-latest"
+sudo docker tag ${WORKER_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:worker-latest
+
+echo "Pushing the images to ECR..."
 sudo docker push ${ECR_IMAGE_URI}:s3-latest
 sudo docker push ${ECR_IMAGE_URI}:rds-latest
+sudo docker push ${ECR_IMAGE_URI}:vote-latest
+sudo docker push ${ECR_IMAGE_URI}:result-latest
+sudo docker push ${ECR_IMAGE_URI}:worker-latest
 
-echo "Docker image has been successfully built and pushed to ECR."
+echo "All Docker images have been successfully built and pushed to ECR."
 
 # =========================================
 # replace variables fields on the rgd's
@@ -113,15 +137,20 @@ python3 /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/kro-and-
     rdswebstack/instance.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/webstack/instance-tmpl.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/webapp/rg.yaml \
+    --voting-app-yaml dogsvscats/voting-app-instance.yaml \
     --region ${REGION} \
     --cluster krmops-on-eks \
     --ecr-repo-uri ${ECR_IMAGE_URI} \
     --ecr-tag rds-latest \
-    --web-tag s3-latest
+    --web-tag s3-latest \
+    --vote-tag vote-latest \
+    --result-tag result-latest \
+    --worker-tag worker-latest
 
 cp -R rdsinstance /home/ec2-user/environment/krmops-on-eks/kro
 cp -R rdswebstack /home/ec2-user/environment/krmops-on-eks/kro
 cp -R webapprds /home/ec2-user/environment/krmops-on-eks/kro
+cp -R dogsvscats /home/ec2-user/environment/krmops-on-eks/kro
 cp -R s3adopt /home/ec2-user/environment/krmops-on-eks/kro
 
 # ========================================

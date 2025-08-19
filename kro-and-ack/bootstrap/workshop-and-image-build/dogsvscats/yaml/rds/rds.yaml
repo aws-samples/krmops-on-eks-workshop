@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rds-password
+  namespace: default
+type: Opaque
+data:
+  password: cG9zdGdyZXM= #postgres
+---
+apiVersion: ec2.services.k8s.aws/v1alpha1
+kind: SecurityGroup
+metadata:
+  name: rds-sg
+  namespace: default
+spec:
+  description: SecurityGroup
+  name: rds-sg
+  vpcID: vpc-09ee084f75f1e580f
+  ingressRules:
+  - ipProtocol: tcp
+    ipRanges:
+    - cidrIP: "10.0.0.0/16"
+    fromPort: 5432
+    toPort: 5432
+---
+apiVersion: rds.services.k8s.aws/v1alpha1
+kind: DBSubnetGroup
+metadata:
+  name: rds-subnet-group
+  namespace: default
+spec:
+  description: DBSubnet group
+  name: rds-subnet-group
+  subnetIDs: [subnet-04914ecd2537b8075, subnet-01040a9f5d132b01a, subnet-0dbdfae4be6fad7d6]
+---
+apiVersion: rds.services.k8s.aws/v1alpha1
+kind: DBInstance
+metadata:
+  name: rds-db-instance
+  namespace: default
+spec:
+  allocatedStorage: 20
+  dbInstanceClass: db.t4g.micro
+  dbInstanceIdentifier: voting-results
+  backupRetentionPeriod: 0
+  engine: postgres
+  engineVersion: "16.3"
+  masterUsername: "postgres"
+  dbSubnetGroupRef: 
+    from: 
+      name: rds-subnet-group
+  vpcSecurityGroupRefs:
+    - from: 
+        name: rds-sg
+  masterUserPassword:
+    namespace: default
+    name: rds-password
+    key: password
+  dbName: postgres

@@ -1,0 +1,53 @@
+apiVersion: ...
+kind: stack
+metadata:
+  name: vote
+spec:
+  name: vote
+  image: vote/latest
+  ingress:
+    enable: true
+    host: "dogsvscats.info"
+    certificate: issue
+  elasticache:
+    enable: true
+    engine: redis
+
+    host: "result.dogsvscats.info"
+---
+apiVersion: ...
+kind: stack
+metadata:
+  name: worker
+spec:
+  name: worker
+  image: worker/latest
+  service:
+    enable: false
+  elasticacheRef:
+    name: vote
+    key: redis
+  rdsRef:
+    name: result
+    key: rds
+
+---
+apiVersion: ...
+kind: stack
+metadata:
+  name: result
+spec:
+  name: result
+  image: result/latest
+  ingress:
+    enable: true
+    host: "result.dogsvscats.info"
+    albgroupRef:
+      name: vote
+      key: albgroup
+  rds:
+    enable: true
+    engine: postgres
+
+
+

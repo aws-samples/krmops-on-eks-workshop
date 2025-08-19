@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vote-deployment
+  namespace: default
+  labels:
+    app: vote
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      name: vote-pod
+      app: vote
+  template:
+    metadata:
+      name: vote-pod
+      labels:
+        name: vote-pod
+        app: vote
+    spec:
+      containers:
+      - name: vote
+        image: 352858358668.dkr.ecr.us-east-1.amazonaws.com/vote
+        ports:
+        - containerPort: 80
+        env:
+        - name: REDIS_HOST
+          value: vote-redis-001.xzakqw.0001.use1.cache.amazonaws.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vote-service
+  namespace: default
+  labels:
+    app: vote
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  selector:
+    name: vote-pod
+    app: vote
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vote-ingress
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/group.name: "vote-app-group"
+    alb.ingress.kubernetes.io/group.order: '10'
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/actions.redirect-to-https: >
+      {"Type":"redirect","RedirectConfig":{"Protocol":"HTTPS","Port":"443","StatusCode":"HTTP_301"}}
+    #alb.ingress.kubernetes.io/actions.forward-multiple-tg: >
+    #  {"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"vote-service","servicePort":"http"}]}}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80, "HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: ""
+  labels:
+    app: vote
+spec:
+  ingressClassName: alb
+  rules:
+  - host: dogsvscats.info
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: vote-service
+            port:
+              number: 80

@@ -161,6 +161,56 @@ def update_webapp_ingress_yaml(path: str, ingress_class: str = "alb"):
     with open(path, "w") as f:
         yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
     log("  ✓ WebApp ingress YAML updated")
+
+def update_voting_app_yaml(path: str, repo_uri: str, vpc_id: str, subnets: list, vote_tag: str = "vote-latest", result_tag: str = "result-latest", worker_tag: str = "worker-latest", region: str = None):
+    log(f"Updating VotingApp YAML: {path}")
+    with open(path) as f:
+        doc = yaml.safe_load(f)
+    if doc.get("kind") != "VotingApp":
+        fail(f"{path} is not a VotingApp resource")
+    
+    # Update image URIs
+    doc["spec"]["voteImage"] = f"{repo_uri}:{vote_tag}"
+    doc["spec"]["resultImage"] = f"{repo_uri}:{result_tag}"
+    doc["spec"]["workerImage"] = f"{repo_uri}:{worker_tag}"
+    
+    # Update VPC and subnet information
+    doc["spec"]["vpcID"] = vpc_id
+    doc["spec"]["subnetIDs"] = subnets
+    
+    # Update region
+    if region:
+        doc["spec"]["region"] = region
+    
+    # Generate unique subdomain based on account ID and region
+    try:
+        import boto3
+        sts = boto3.client('sts', region_name=region or 'us-west-2')
+        account_id = sts.get_caller_identity()['Account']
+        # Create unique subdomain: workshop-{account_id}-{region}
+        unique_subdomain = f"workshop-{account_id[-4:]}-{region or 'us-west-2'}"
+        doc["spec"]["domain"]["subdomain"] = unique_subdomain
+        log(f"  ✓ Generated unique subdomain: {unique_subdomain}")
+        
+        # Try to get the hosted zone ID for dogsvscats.us
+        try:
+            route53 = boto3.client('route53', region_name=region or 'us-west-2')
+            hosted_zones = route53.list_hosted_zones_by_name(DNSName='dogsvscats.us')
+            for zone in hosted_zones.get('HostedZones', []):
+                if zone['Name'] == 'dogsvscats.us.':
+                    doc["spec"]["domain"]["hostedZoneId"] = zone['Id'].replace('/hostedzone/', '')
+                    log(f"  ✓ Found hosted zone ID: {zone['Id']}")
+                    break
+        except Exception as e:
+            log(f"  ⚠ Could not find hosted zone for dogsvscats.us: {e}")
+            log("  ⚠ Please update hostedZoneId manually in the YAML")
+            
+    except Exception as e:
+        log(f"  ⚠ Could not generate unique subdomain: {e}")
+    
+    with open(path, "w") as f:
+        yaml.dump(doc, f, Dumper=CustomDumper, default_flow_style=False, sort_keys=False)
+    log("  ✓ VotingApp YAML updated")
 # ──────────────────────────────────────────────────────────────────────────────
 # Entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -174,6 +224,7 @@ def main():
     p.add_argument("db_yaml", help="Path to DbWebStack YAML file (instance.yaml)")
     p.add_argument("web_yaml", help="Path to WebStack YAML file")
     p.add_argument("webapp_yaml", help="Path to WebApp ResourceGraphDefinition YAML file")
+    p.add_argument("--voting-app-yaml", help="Path to VotingApp YAML file (optional)")
     p.add_argument("--cluster", default="kro", help="EKS cluster name")
     p.add_argument("--region", required=True, help="AWS region")
     p.add_argument(
@@ -189,6 +240,18 @@ def main():
         help="Tag to append to the WebStack image URI"
     )
     p.add_argument(
+        "--vote-tag", default="vote-latest",
+        help="Tag to append to the VotingApp vote image URI"
+    )
+    p.add_argument(
+        "--result-tag", default="result-latest",
+        help="Tag to append to the VotingApp result image URI"
+    )
+    p.add_argument(
+        "--worker-tag", default="worker-latest",
+        help="Tag to append to the VotingApp worker image URI"
+    )
+    p.add_argument(
         "--ingress-class", default="alb",
         help="Value to set for ingressClassName in WebApp ingress"
     )
@@ -197,6 +260,9 @@ def main():
     for f in (args.identity_yaml, args.db_yaml, args.web_yaml, args.webapp_yaml):
         if not os.path.exists(f):
             fail(f"File not found: {f}")
+
+    if args.voting_app_yaml and not os.path.exists(args.voting_app_yaml):
+        fail(f"VotingApp YAML file not found: {args.voting_app_yaml}")
 
     if not args.ecr_repo_uri:
         fail("ECR repository URI must be provided via --ecr-repo-uri or ECR_IMAGE_URI env var")
@@ -213,6 +279,10 @@ def main():
         update_dbwebstack_yaml(args.db_yaml, args.ecr_repo_uri, vpc_id, cidr, priv_subs, args.ecr_tag, args.region)
         update_webstack_yaml(args.web_yaml, args.ecr_repo_uri, args.web_tag, args.cluster)
         update_webapp_ingress_yaml(args.webapp_yaml, args.ingress_class)
+        
+        # Update VotingApp YAML if provided
+        if args.voting_app_yaml:
+            update_voting_app_yaml(args.voting_app_yaml, args.ecr_repo_uri, vpc_id, priv_subs, args.vote_tag, args.result_tag, args.worker_tag, args.region)
 
         log("✅ All updates completed successfully.")
     except Exception as e:

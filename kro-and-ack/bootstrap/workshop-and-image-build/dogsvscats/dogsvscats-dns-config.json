@@ -1,0 +1,7 @@
+{
+    "domain": "dogsvscats.us",
+    "hostedZoneId": "Z0362187GFK6MIGB8GOB",
+    "masterAccountId": "889522050233",
+    "crossAccountRoleArn": "arn:aws:iam::889522050233:role/CrossAccountDNSRole",
+    "externalId": "dogsvscats-dns-access"
+}

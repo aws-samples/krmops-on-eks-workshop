@@ -1,0 +1,58 @@
+apiVersion: x.symphony.k8s.aws/v1alpha1
+kind: ResourceGroup
+metadata:
+  name: redis.x.symphony.k8s.aws
+spec:
+  apiVersion: v1alpha1
+  kind: redis
+  definition:
+    spec:
+      name: string
+      namespace: 'string | default="default"'
+      region: 'string | default="us-east-1"'
+      clusterName: string | default="spark-symphony"
+      subnetIDs: '[]string | default=["subnet-04914ecd2537b8075","subnet-04914ecd2537b8075","subnet-0dbdfae4be6fad7d6"]'
+      vpcID: 'string | default="vpc-09ee084f75f1e580f"'
+  resources:
+  - name: cachesubnetgroup
+    definition:
+      apiVersion: elasticache.services.k8s.aws/v1alpha1
+      kind: CacheSubnetGroup
+      metadata:
+        name: ${spec.name}-redis-subnet-group
+      spec:
+        cacheSubnetGroupDescription: "Redis ElastiCache subnet group"
+        cacheSubnetGroupName: ${spec.name}-redis-subnet-group
+        subnetIDs: ${spec.subnetIDs}
+  - name: sg
+    definition:
+      apiVersion: ec2.services.k8s.aws/v1alpha1
+      kind: SecurityGroup
+      metadata:
+        name: ${spec.name}-redis-sg
+      spec:
+        name: ${spec.name}-redis-sg
+        description: "Redis ElastiCache security group"
+        vpcID: ${spec.vpcID}
+        ingressRules:
+        - fromPort: 6379
+          toPort: 6379
+          ipProtocol: tcp
+          ipRanges:
+          - cidrIP: 0.0.0.0/0
+  - name: rediscluster
+    definition:
+      apiVersion: elasticache.services.k8s.aws/v1alpha1
+      kind: CacheCluster
+      metadata:
+        name: ${spec.name}-redis
+      spec:
+        cacheClusterID: vote-redis-cluster
+        cacheNodeType: cache.t3.micro
+        cacheSubnetGroupName: ${spec.name}-redis-subnet-group
+        engine: redis
+        engineVersion: "7.1"
+        numCacheNodes: 1
+        port: 6379
+        securityGroupIDs: 
+        - ${sg.status.id}

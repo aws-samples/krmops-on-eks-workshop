@@ -1,0 +1,14 @@
+apiVersion: x.symphony.k8s.aws/v1alpha1
+kind: application
+metadata:
+  name: votes
+spec:
+  name: votes
+  image: 352858358668.dkr.ecr.us-east-1.amazonaws.com/vote
+  ingress:
+    enable: true
+    host: "dogsvscats.info"
+    certificate: issue
+  elasticache:
+    enable: true
+    engine: redis

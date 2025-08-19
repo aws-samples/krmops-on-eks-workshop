@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-deployment
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      name: worker-pod
+  template:
+    metadata:
+      name: worker-pod
+      labels:
+        name: worker-pod
+    spec:
+      containers:
+      - name: worker
+        image: 352858358668.dkr.ecr.us-east-1.amazonaws.com/worker
+        imagePullPolicy: Always
+        env:
+        - name: REDIS_HOST
+          value: vote-redis-001.xzakqw.0001.use1.cache.amazonaws.com
+        - name: POSTGRES_HOST
+          value: voting-results.cvyds1wqewch.us-east-1.rds.amazonaws.com

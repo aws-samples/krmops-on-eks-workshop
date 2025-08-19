@@ -1,0 +1,7 @@
+apiVersion: x.symphony.k8s.aws/v1alpha1
+kind: rds
+metadata:
+  name: votes-test
+spec:
+  name: votes-test
+  clusterName: spark-symphony

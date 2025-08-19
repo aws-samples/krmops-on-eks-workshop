@@ -1,0 +1,6 @@
+apiVersion: x.symphony.k8s.aws/v1alpha1
+kind: redis
+metadata:
+  name: votes
+spec:
+  name: votes

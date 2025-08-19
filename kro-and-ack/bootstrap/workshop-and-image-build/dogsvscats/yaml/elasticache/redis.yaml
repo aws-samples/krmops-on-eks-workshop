@@ -1,0 +1,42 @@
+apiVersion: elasticache.services.k8s.aws/v1alpha1
+kind: CacheSubnetGroup
+metadata:
+  name: vote-redis-subnet-group
+spec:
+  cacheSubnetGroupDescription: "Redis ElastiCache subnet group"
+  cacheSubnetGroupName: "vote-redis-subnet-group"
+  subnetIDs: [subnet-04914ecd2537b8075, subnet-01040a9f5d132b01a, subnet-0dbdfae4be6fad7d6]
+---
+apiVersion: elasticache.services.k8s.aws/v1alpha1
+kind: CacheCluster
+metadata:
+  name: vote-redis-cluster
+spec:
+  cacheClusterID: vote-redis-cluster
+  cacheNodeType: cache.t3.micro
+  cacheSubnetGroupName: vote-redis-subnet-group
+  engine: redis
+  engineVersion: "7.1"
+  numCacheNodes: 2
+  port: 6379
+  securityGroupIDs:
+  - sg-04af42c87e389c957 #sg.status.id
+---
+apiVersion: ec2.services.k8s.aws/v1alpha1
+kind: SecurityGroup
+metadata:
+  name: vote-redis-sg
+spec:
+  vpcID: vpc-09ee084f75f1e580f
+  name: vote-redis-sg
+  description: Redis ElastiCache Security Group
+  ingressRules:
+  - ipProtocol: tcp
+    ipRanges:
+    - cidrIP: "10.0.0.0/16"
+    fromPort: 6379
+    toPort: 6379
+# how do you get ingress rule from another security group?
+# userIDGroupID:
+# - description: 
+#   groupID: get it from status.id

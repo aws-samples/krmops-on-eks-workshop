@@ -1,0 +1,24 @@
+apiVersion: acm.services.k8s.aws/v1alpha1
+kind: Certificate
+metadata:
+  name: dogsvscats-certificate
+  namespace: default
+spec:
+  domainName: dogsvscats.info
+  subjectAlternativeNames:
+    - '*.dogsvscats.info'
+  domainValidationOptions:
+    - domainName: dogsvscats.info
+      validationDomain: dogsvscats.info
+---
+apiVersion: route53.services.k8s.aws/v1alpha1
+kind: RecordSet
+metadata:
+  name: dogsvscats-validation
+spec:
+  hostedZoneID: Z07589007ZVX1K0A3C82
+  recordType: CNAME
+  name: _c5be228f5a8b5ca31fd58c25095b8b1a
+  resourceRecords:
+  - value: _cdbfa8eedbd4c7a253715cec82a108de.djqtsrsxkq.acm-validations.aws.
+  ttl: 300

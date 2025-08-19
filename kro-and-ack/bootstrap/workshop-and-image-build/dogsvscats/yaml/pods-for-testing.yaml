@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-cli-pod
+  namespace: default
+spec:
+#  serviceAccountName: redis
+  containers:
+    - name: redis-cli-container
+      image: redis:alpine
+      command: ["sleep"]
+      args: ["3600"]  # Sleep for 1 hour (3600 seconds)
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netcat-pod
+spec:
+  serviceAccountName: redis
+  containers:
+    - name: nc
+      image: alpine
+      command: ["sleep"]
+      args: ["3600"]  # Sleep for 1 hour (3600 seconds)
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: aws-cli
+  namespace: default
+spec:
+  serviceAccountName: redis
+  containers:
+    - name: aws-cli
+      image: amazon/aws-cli:latest
+      imagePullPolicy: Always
+      command: ["sleep"]
+      args: ["3600"]  # Sleep for 1 hour (3600 seconds)

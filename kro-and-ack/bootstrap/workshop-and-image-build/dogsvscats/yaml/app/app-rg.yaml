@@ -1,0 +1,89 @@
+apiVersion: x.symphony.k8s.aws/v1alpha1
+kind: ResourceGroup
+metadata:
+  name: application.x.symphony.k8s.aws
+spec:
+  apiVersion: v1alpha1
+  kind: application
+  definition:
+    spec:
+      name: string | required
+      image: string | required
+      namespace: string | default="default"
+      region: string | default="us-east-1"
+      clusterName: string | default="spark-symphony"
+      ingress:
+        enable: bool | default="false"
+      service:
+        enable: bool | default="true"
+  resources:
+  - name: deployment
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: string | default=${spec.name}
+        namespace: ${spec.namespace}
+        labels:
+          app: string | default=${spec.name}
+          region: string | default=${spec.region}
+          clusterName: string | default=${spec.clusterName}
+      spec:
+        replicas: int | default="3"
+        selector:
+          matchLabels:
+            app: string | default=${spec.name}
+        template:
+          metadata:
+            labels:
+              app: string | default=${spec.name}
+          spec:
+            containers:
+            - name: string | default=${spec.name}
+              image: ${spec.image}
+              imagePullPolicy: IfNotPresent
+              ports:
+              - containerPort: int
+  - name: service
+    conditional: ${spec.service.enable}
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: string | default=${spec.name}
+        namespace: ${spec.namespace}
+        labels:
+          app: string | default=${spec.name}
+      spec:
+        type: NodePort
+        selector:
+          app: string | default=${spec.name}
+        ports:
+        - port: int | default="80"
+          targetPort: int | default="8080"
+          protocol: TCP
+  - name: ingress
+    conditional: ${spec.ingress.enable}
+    definition:
+      apiVersion: networking.k8s.io/v1beta1
+      kind: Ingress
+      metadata:
+        name: string | default=${spec.name}
+        namespace: ${spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+        labels:
+          app: string | default=${spec.name}
+      spec:
+      spec:
+        rules:
+          - http:
+              paths:
+                - path: string | default="/"
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: string | default=${spec.name}
+                      port:
+                        number: int | default="80"

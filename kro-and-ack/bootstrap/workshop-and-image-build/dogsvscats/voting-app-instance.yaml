@@ -1,0 +1,32 @@
+apiVersion: kro.run/v1alpha1
+kind: VotingApp
+metadata:
+  name: dogsvscats-voting-app
+  namespace: default
+spec:
+  name: dogsvscats
+  namespace: default
+  region: us-west-2
+  clusterName: krmops-on-eks
+  voteImage: "038719561591.dkr.ecr.us-west-2.amazonaws.com/krmops-ecr-repo:vote-latest"
+  resultImage: "038719561591.dkr.ecr.us-west-2.amazonaws.com/krmops-ecr-repo:result-latest"
+  workerImage: "038719561591.dkr.ecr.us-west-2.amazonaws.com/krmops-ecr-repo:worker-latest"
+  domain:
+    enabled: true
+    baseDomain: "dogsvscats.us"
+    subdomain: "workshop"  # Will be updated by build script to unique value
+    hostedZoneId: "Z1234567890ABC"  # Will be updated by build script
+  acm:
+    enabled: true
+  ingress:
+    enabled: true
+  service:
+    enabled: true
+  redis:
+    enabled: true
+  postgres:
+    enabled: true
+  vpcID: "vpc-0123456789abcdef0"  # Will be updated by build script
+  subnetIDs: 
+    - "subnet-0123456789abcdef0"  # Will be updated by build script
+    - "subnet-0123456789abcdef1"  # Will be updated by build script
