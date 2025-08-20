@@ -103,12 +103,12 @@ EOF
 
 # Create role (this will be updated with correct OIDC provider after EKS cluster exists)
 aws iam create-role \
-    --role-name ACMCertificateRole \
+    --role-name externalACMCertificate \
     --assume-role-policy-document file://acm-cert-trust-policy.json \
     --description "Role for ACM certificate validation with cross-account DNS" || echo "Role may already exist"
 
 aws iam put-role-policy \
-    --role-name ACMCertificateRole \
+    --role-name externalACMCertificate \
     --policy-name ACMCertificatePolicy \
     --policy-document file://acm-cert-policy.json
 
