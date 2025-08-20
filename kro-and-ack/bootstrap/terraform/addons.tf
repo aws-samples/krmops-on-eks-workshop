@@ -59,6 +59,10 @@ module "eks_ack_addons" {
   kms = {
     chart_version = "1.0.21"
   }
+  enable_elasticache       = true
+  elasticache = {
+    chart_version = "1.2.0"
+  }  
   enable_dynamodb          = true
   dynamodb = {
     chart_version = "1.2.18"
