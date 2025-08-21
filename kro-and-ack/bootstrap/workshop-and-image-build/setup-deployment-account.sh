@@ -36,18 +36,17 @@ echo "Getting EKS OIDC provider ID..."
 CLUSTER_NAME="krmops-on-eks"
 
 # Get the OIDC issuer URL from the EKS cluster
-OIDC_ISSUER=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query 'cluster.identity.oidc.issuer' --output text)
+OIDC_ISSUER=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query 'cluster.identity.oidc.issuer' --output text 2>/dev/null)
 
 if [ -z "$OIDC_ISSUER" ]; then
-    echo "❌ Could not retrieve OIDC issuer for cluster $CLUSTER_NAME"
-    echo "Please ensure the EKS cluster exists and you have proper permissions"
-    exit 1
+    echo "⚠️  Could not retrieve OIDC issuer for cluster $CLUSTER_NAME"
+    echo "This is normal if the cluster doesn't exist yet. Using placeholder for now."
+    OIDC_PROVIDER_ID="PLACEHOLDER"
+else
+    # Extract the OIDC provider ID from the issuer URL
+    OIDC_PROVIDER_ID=$(echo $OIDC_ISSUER | sed 's|https://oidc.eks.'$REGION'.amazonaws.com/id/||')
+    echo "✅ Found OIDC Provider ID: $OIDC_PROVIDER_ID"
 fi
-
-# Extract the OIDC provider ID from the issuer URL
-OIDC_PROVIDER_ID=$(echo $OIDC_ISSUER | sed 's|https://oidc.eks.'$REGION'.amazonaws.com/id/||')
-
-echo "✅ Found OIDC Provider ID: $OIDC_PROVIDER_ID"
 
 # =========================================
 # Create IAM role for ACM certificate validation
@@ -115,7 +114,7 @@ aws iam put-role-policy \
 echo "✅ ACM certificate role created"
 
 # =========================================
-# Generate unique subdomain
+# Generate unique subdomain preview
 # =========================================
 
 UNIQUE_SUBDOMAIN="workshop-${CURRENT_ACCOUNT_ID: -4}-${REGION}"
@@ -125,24 +124,9 @@ RESULTS_DOMAIN="results.${UNIQUE_SUBDOMAIN}.${DOMAIN}"
 echo "Generated unique subdomain: $UNIQUE_SUBDOMAIN"
 echo "Vote app will be available at: https://$VOTE_DOMAIN"
 echo "Results app will be available at: https://$RESULTS_DOMAIN"
-
-# =========================================
-# Update deployment configuration
-# =========================================
-
-cat > deployment-config.json << EOF
-{
-    "accountId": "$CURRENT_ACCOUNT_ID",
-    "region": "$REGION",
-    "subdomain": "$UNIQUE_SUBDOMAIN",
-    "voteDomain": "$VOTE_DOMAIN",
-    "resultsDomain": "$RESULTS_DOMAIN",
-    "hostedZoneId": "$HOSTED_ZONE_ID",
-    "masterAccountId": "$MASTER_ACCOUNT_ID"
-}
-EOF
-
-echo "✅ Deployment configuration saved to: deployment-config.json"
+echo ""
+echo "ℹ️  Note: The actual subdomain configuration will be handled automatically"
+echo "   by the workshopbuild.sh script using the update_yaml.py logic."
 
 # Cleanup
 rm -f acm-cert-trust-policy.json acm-cert-policy.json

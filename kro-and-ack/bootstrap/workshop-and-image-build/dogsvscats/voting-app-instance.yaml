@@ -15,7 +15,7 @@ spec:
     enabled: true
     baseDomain: "dogsvscats.us"
     subdomain: "workshop"  # Will be updated by build script to unique value
-    hostedZoneId: "Z1234567890ABC"  # Will be updated by build script
+    hostedZoneId: "Z0362187GFK6MIGB8GOB"  # Your actual hosted zone ID
   acm:
     enabled: true
   ingress:

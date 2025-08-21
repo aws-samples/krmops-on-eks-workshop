@@ -43,7 +43,7 @@ spec:
       - ${schema.spec.acm.enabled}
       - ${schema.spec.domain.enabled}
     readyWhen:
-      - ${has(acmcertificate.status.certificateArn)}
+      - ${has(acmcertificate.status.ackResourceMetadata.arn)}
     template:
       apiVersion: acm.services.k8s.aws/v1alpha1
       kind: Certificate
@@ -54,12 +54,6 @@ spec:
         domainName: ${schema.spec.domain.subdomain}.${schema.spec.domain.baseDomain}
         subjectAlternativeNames:
         - "*.${schema.spec.domain.subdomain}.${schema.spec.domain.baseDomain}"
-        validationMethod: DNS
-        domainValidationOptions:
-        - domainName: ${schema.spec.domain.subdomain}.${schema.spec.domain.baseDomain}
-          hostedZoneID: ${schema.spec.domain.hostedZoneId}
-        - domainName: "*.${schema.spec.domain.subdomain}.${schema.spec.domain.baseDomain}"
-          hostedZoneID: ${schema.spec.domain.hostedZoneId}
 
   # --- Redis Resources ---
   - id: redissubnetgroup
@@ -237,7 +231,7 @@ spec:
               - containerPort: 80
               env:
               - name: REDIS_HOST
-                value: ${rediscluster.status.redisEndpoint.address}
+                value: ${rediscluster.status.cacheNodes[0].endpoint.address}
 
   - id: voteservice
     includeWhen:
@@ -261,9 +255,12 @@ spec:
           targetPort: 80
           protocol: TCP
 
+  # --- Vote Ingress (with SSL) ---
   - id: voteingress
     includeWhen:
       - ${schema.spec.ingress.enabled}
+      - ${schema.spec.acm.enabled}
+      - ${schema.spec.domain.enabled}
     readyWhen:
       - ${has(voteingress.status.loadBalancer)}
     template:
@@ -277,7 +274,7 @@ spec:
           alb.ingress.kubernetes.io/scheme: internet-facing
           alb.ingress.kubernetes.io/target-type: ip
           alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
-          alb.ingress.kubernetes.io/certificate-arn: ${acmcertificate.status.certificateArn}
+          alb.ingress.kubernetes.io/certificate-arn: ${acmcertificate.status.ackResourceMetadata.arn}
           alb.ingress.kubernetes.io/ssl-redirect: '443'
         labels:
           app: ${schema.spec.name}-vote
@@ -294,6 +291,8 @@ spec:
                   name: ${schema.spec.name}-vote-service
                   port:
                     number: 80
+
+
 
   # --- Result App Deployment ---
   - id: resultdeployment
@@ -358,9 +357,12 @@ spec:
           targetPort: 80
           protocol: TCP
 
+  # --- Result Ingress (with SSL) ---
   - id: resultingress
     includeWhen:
       - ${schema.spec.ingress.enabled}
+      - ${schema.spec.acm.enabled}
+      - ${schema.spec.domain.enabled}
     readyWhen:
       - ${has(resultingress.status.loadBalancer)}
     template:
@@ -374,7 +376,7 @@ spec:
           alb.ingress.kubernetes.io/scheme: internet-facing
           alb.ingress.kubernetes.io/target-type: ip
           alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
-          alb.ingress.kubernetes.io/certificate-arn: ${acmcertificate.status.certificateArn}
+          alb.ingress.kubernetes.io/certificate-arn: ${acmcertificate.status.ackResourceMetadata.arn}
           alb.ingress.kubernetes.io/ssl-redirect: '443'
         labels:
           app: ${schema.spec.name}-result
@@ -391,6 +393,8 @@ spec:
                   name: ${schema.spec.name}-result-service
                   port:
                     number: 80
+
+
 
   # --- Worker Deployment ---
   - id: workerdeployment
@@ -420,7 +424,7 @@ spec:
               imagePullPolicy: Always
               env:
               - name: REDIS_HOST
-                value: ${rediscluster.status.redisEndpoint.address}
+                value: ${rediscluster.status.cacheNodes[0].endpoint.address}
               - name: POSTGRES_HOST
                 value: ${postgresinstance.status.endpoint.address}
               - name: POSTGRES_USER

@@ -43,6 +43,10 @@ module "eks_ack_addons" {
   ecrpublic_token    = data.aws_ecrpublic_authorization_token.token.password
 
   # Controllers to enable
+  enable_acm               = true
+  acm = {
+    chart_version = "1.1.0"
+  }
   enable_iam               = true
   iam = {
     chart_version = "1.3.17"
