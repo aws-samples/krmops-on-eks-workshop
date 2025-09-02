@@ -108,7 +108,7 @@ aws iam create-role \
 
 aws iam put-role-policy \
     --role-name externalACMCertificate \
-    --policy-name ACMCertificatePolicy \
+    --policy-name externalACMCertificatePolicy \
     --policy-document file://acm-cert-policy.json
 
 echo "✅ ACM certificate role created"

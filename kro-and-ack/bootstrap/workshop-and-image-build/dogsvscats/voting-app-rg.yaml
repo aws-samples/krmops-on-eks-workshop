@@ -18,7 +18,7 @@ spec:
         enabled: boolean | default=true
         baseDomain: string | default="dogsvscats.us"
         subdomain: string | default="workshop"
-        hostedZoneId: string
+        hostedZoneId: string | default=""
       acm:
         enabled: boolean | default=true
       ingress:
@@ -29,14 +29,26 @@ spec:
         enabled: boolean | default=true
       postgres:
         enabled: boolean | default=true
-      vpcID: string
-      subnetIDs: "[]string"
+      vpcID: string | default=""
+      subnetIDs: "[]string" | default=[]
+      configMapName: string | default="krmops-infrastructure-config"
     status:
       voteReplicas: ${votedeployment.status.availableReplicas}
       resultReplicas: ${resultdeployment.status.availableReplicas}
       workerReplicas: ${workerdeployment.status.availableReplicas}
 
   resources:
+  # --- Reference existing Infrastructure ConfigMap ---
+  - id: infraconfig
+    readyWhen:
+      - ${has(infraconfig.data)}
+    template:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: ${schema.spec.configMapName}
+        namespace: ${schema.spec.namespace}
+
   # --- ACM Certificate ---
   - id: acmcertificate
     includeWhen:
@@ -70,7 +82,9 @@ spec:
       spec:
         cacheSubnetGroupDescription: "Redis ElastiCache subnet group for voting app"
         cacheSubnetGroupName: ${schema.spec.name}-redis-subnet-group
-        subnetIDs: ${schema.spec.subnetIDs}
+        subnetIDs: 
+        - ${infraconfig.data.subnetID1}
+        - ${infraconfig.data.subnetID2}
 
   - id: redissecuritygroup
     includeWhen:
@@ -86,7 +100,7 @@ spec:
       spec:
         name: ${schema.spec.name}-redis-sg
         description: "Redis ElastiCache security group for voting app"
-        vpcID: ${schema.spec.vpcID}
+        vpcID: ${infraconfig.data.vpcID}
         ingressRules:
         - fromPort: 6379
           toPort: 6379
@@ -146,7 +160,7 @@ spec:
       spec:
         description: "PostgreSQL RDS security group for voting app"
         name: ${schema.spec.name}-postgres-sg
-        vpcID: ${schema.spec.vpcID}
+        vpcID: ${infraconfig.data.vpcID}
         ingressRules:
         - ipProtocol: tcp
           ipRanges:
@@ -168,7 +182,9 @@ spec:
       spec:
         description: "PostgreSQL RDS subnet group for voting app"
         name: ${schema.spec.name}-postgres-subnet-group
-        subnetIDs: ${schema.spec.subnetIDs}
+        subnetIDs: 
+        - ${infraconfig.data.subnetID1}
+        - ${infraconfig.data.subnetID2}
 
   - id: postgresinstance
     includeWhen:
@@ -231,7 +247,7 @@ spec:
               - containerPort: 80
               env:
               - name: REDIS_HOST
-                value: ${rediscluster.status.cacheNodes[0].endpoint.address}
+                value: dogsvscats-redis-cluster.cache.amazonaws.com
 
   - id: voteservice
     includeWhen:
@@ -424,7 +440,7 @@ spec:
               imagePullPolicy: Always
               env:
               - name: REDIS_HOST
-                value: ${rediscluster.status.cacheNodes[0].endpoint.address}
+                value: dogsvscats-redis-cluster.cache.amazonaws.com
               - name: POSTGRES_HOST
                 value: ${postgresinstance.status.endpoint.address}
               - name: POSTGRES_USER

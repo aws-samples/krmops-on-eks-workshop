@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: krmops-infrastructure-config
+  namespace: default
+data:
+  region: "us-west-2"
+  clusterName: "krmops-on-eks"
+  vpcID: "vpc-0123456789abcdef0"  # Will be updated by build script
+  subnetID1: "subnet-0123456789abcdef0"  # Will be updated by build script
+  subnetID2: "subnet-0123456789abcdef1"  # Will be updated by build script
+  hostedZoneId: "Z0362187GFK6MIGB8GOB"  # Will be updated by build script
+  baseDomain: "dogsvscats.us"
+  subdomain: "workshop"  # Will be updated by build script to unique value

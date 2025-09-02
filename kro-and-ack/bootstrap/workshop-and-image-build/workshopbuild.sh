@@ -51,9 +51,6 @@ echo "Detected Region: $REGION"
 # Name for your local Docker image and the ECR repository
 S3_IMAGE_NAME="s3-app"         # Change as appropriate
 RDS_IMAGE_NAME="rds-app"         # Change as appropriate
-VOTE_IMAGE_NAME="vote-app"       # Dogs vs Cats voting app
-RESULT_IMAGE_NAME="result-app"   # Dogs vs Cats result app
-WORKER_IMAGE_NAME="worker-app"   # Dogs vs Cats worker app
 REPO_NAME="krmops-ecr-repo"       # Change as appropriate
 
 # =========================================
@@ -65,15 +62,6 @@ sudo docker build -t ${S3_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-o
 
 echo "Building Docker image: ${RDS_IMAGE_NAME}:latest"
 sudo docker build -t ${RDS_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/rds-demo-app/.
-
-echo "Building Docker image: ${VOTE_IMAGE_NAME}:latest"
-sudo docker build -t ${VOTE_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/dogsvscats/voting-app/vote/.
-
-echo "Building Docker image: ${RESULT_IMAGE_NAME}:latest"
-sudo docker build -t ${RESULT_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/dogsvscats/voting-app/result/.
-
-echo "Building Docker image: ${WORKER_IMAGE_NAME}:latest"
-sudo docker build -t ${WORKER_IMAGE_NAME}:latest /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/application/dogsvscats/voting-app/worker/.
 
 # =========================================
 # Create an ECR Repository (if it doesn't exist)
@@ -107,21 +95,9 @@ sudo docker tag ${S3_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:s3-latest
 echo "Tagging the image as ${ECR_IMAGE_URI}:rds-latest"
 sudo docker tag ${RDS_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:rds-latest
 
-echo "Tagging the image as ${ECR_IMAGE_URI}:vote-latest"
-sudo docker tag ${VOTE_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:vote-latest
-
-echo "Tagging the image as ${ECR_IMAGE_URI}:result-latest"
-sudo docker tag ${RESULT_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:result-latest
-
-echo "Tagging the image as ${ECR_IMAGE_URI}:worker-latest"
-sudo docker tag ${WORKER_IMAGE_NAME}:latest ${ECR_IMAGE_URI}:worker-latest
-
 echo "Pushing the images to ECR..."
 sudo docker push ${ECR_IMAGE_URI}:s3-latest
 sudo docker push ${ECR_IMAGE_URI}:rds-latest
-sudo docker push ${ECR_IMAGE_URI}:vote-latest
-sudo docker push ${ECR_IMAGE_URI}:result-latest
-sudo docker push ${ECR_IMAGE_URI}:worker-latest
 
 echo "All Docker images have been successfully built and pushed to ECR."
 
@@ -137,15 +113,17 @@ python3 /home/ec2-user/environment/krmops-on-eks/krmops-on-eks-workshop/kro-and-
     rdswebstack/instance.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/webstack/instance-tmpl.yaml \
     /home/ec2-user/environment/krmops-on-eks/kro/webapp/rg.yaml \
-    --voting-app-yaml dogsvscats/voting-app-instance.yaml \
     --region ${REGION} \
     --cluster krmops-on-eks \
     --ecr-repo-uri ${ECR_IMAGE_URI} \
     --ecr-tag rds-latest \
-    --web-tag s3-latest \
-    --vote-tag vote-latest \
-    --result-tag result-latest \
-    --worker-tag worker-latest
+    --web-tag s3-latest
+
+# ========================================
+# Note: Infrastructure ConfigMap already exists in the cluster
+# The voting app will reference the existing ConfigMap for infrastructure values
+# ========================================
+echo "Using existing infrastructure ConfigMap 'krmops-infrastructure-config' from the cluster"
 
 cp -R rdsinstance /home/ec2-user/environment/krmops-on-eks/kro
 cp -R rdswebstack /home/ec2-user/environment/krmops-on-eks/kro
@@ -254,6 +232,78 @@ rm -f kms-policy.json secretsmanager-policy.json
 echo "Successfully added KMS and Secrets Manager permissions to role: $ROLE_NAME"
 echo "KMS Policy ARN: $KMS_POLICY_ARN"
 echo "Secrets Manager Policy ARN: $SM_POLICY_ARN"
+
+# ========================================
+# Find the first IAM role that starts with "ack-acm-"
+# ========================================
+echo "Finding IAM role starting with 'ack-acm-'..."
+ACM_ROLE_NAME=$(aws iam list-roles --query "Roles[?starts_with(RoleName, 'ack-acm-')].RoleName" --output text | head -n 1)
+
+if [ -z "$ACM_ROLE_NAME" ]; then
+    echo "No role starting with 'ack-acm-' was found. ACM controller may not be installed."
+else
+    echo "Found ACM role: $ACM_ROLE_NAME"
+
+    # ========================================
+    # Create a policy document for ACM and Route 53 permissions
+    # ========================================
+    echo "Creating ACM and Route 53 policy document..."
+    cat > acm-route53-policy.json << EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "acm:*",
+                "route53:GetChange",
+                "route53:ChangeResourceRecordSets",
+                "route53:ListResourceRecordSets",
+                "route53:GetHostedZone",
+                "route53:ListHostedZones",
+                "route53:ListHostedZonesByName"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": "arn:aws:iam::889522050233:role/CrossAccountDNSRole"
+        }
+    ]
+}
+EOF
+
+    # ========================================
+    # Create the policy in AWS
+    # ========================================
+    echo "Creating ACM and Route 53 policy in AWS..."
+    ACM_POLICY_ARN=$(aws iam create-policy \
+        --policy-name "${ACM_ROLE_NAME}-acm-route53-policy" \
+        --policy-document file://acm-route53-policy.json \
+        --query 'Policy.Arn' \
+        --output text 2>/dev/null || \
+        aws iam get-policy \
+        --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${ACM_ROLE_NAME}-acm-route53-policy" \
+        --query 'Policy.Arn' \
+        --output text)
+
+    # ========================================
+    # Attach the policy to the ACM role
+    # ========================================
+    echo "Attaching ACM and Route 53 policy to role..."
+    aws iam attach-role-policy \
+        --role-name "$ACM_ROLE_NAME" \
+        --policy-arn "$ACM_POLICY_ARN"
+
+    # ========================================
+    # Clean up temporary files
+    # ========================================
+    rm -f acm-route53-policy.json
+
+    echo "Successfully added ACM and Route 53 permissions to role: $ACM_ROLE_NAME"
+    echo "ACM Policy ARN: $ACM_POLICY_ARN"
+fi
 
 # ========================================
 # Install secret provider
