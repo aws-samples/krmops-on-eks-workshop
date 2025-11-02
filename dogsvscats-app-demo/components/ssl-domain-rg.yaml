@@ -1,0 +1,291 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: ssl-domain.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: SslDomain
+    spec:
+      name: string
+      namespace: string | default="default"
+      domain:
+        hostedZoneId: string | optional
+        baseDomain: string | optional
+      voteServiceName: string
+      resultServiceName: string
+      acm:
+        enabled: boolean | default=true
+      ingress:
+        enabled: boolean | default=true
+    status:
+      voteCertificateArn: ${acmcertificate.status.ackResourceMetadata.arn | optional}
+      resultCertificateArn: ${resultcertificate.status.ackResourceMetadata.arn | optional}
+      voteIngressHostname: ${voteingress.status.loadBalancer.ingress[0].hostname | optional}
+      resultIngressHostname: ${resultingress.status.loadBalancer.ingress[0].hostname | optional}
+      voteIngressHttpHostname: ${voteingresshttp.status.loadBalancer.ingress[0].hostname | optional}
+      resultIngressHttpHostname: ${resultingresshttp.status.loadBalancer.ingress[0].hostname | optional}
+
+  resources:
+  # --- ACM Certificate for Vote ---
+  - id: acmcertificate
+    includeWhen:
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(acmcertificate.status.domainValidations)}
+    template:
+      apiVersion: acm.services.k8s.aws/v1alpha1
+      kind: Certificate
+      metadata:
+        name: ${schema.spec.name}-vote-certificate
+        namespace: ${schema.spec.namespace}
+      spec:
+        domainName: vote.${schema.spec.domain.baseDomain}
+        domainValidationOptions:
+        - domainName: vote.${schema.spec.domain.baseDomain}
+          validationDomain: ${schema.spec.domain.baseDomain}
+
+  # --- ACM Certificate for Result ---
+  - id: resultcertificate
+    includeWhen:
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(resultcertificate.status.domainValidations)}
+    template:
+      apiVersion: acm.services.k8s.aws/v1alpha1
+      kind: Certificate
+      metadata:
+        name: ${schema.spec.name}-result-certificate
+        namespace: ${schema.spec.namespace}
+      spec:
+        domainName: result.${schema.spec.domain.baseDomain}
+        domainValidationOptions:
+        - domainName: result.${schema.spec.domain.baseDomain}
+          validationDomain: ${schema.spec.domain.baseDomain}
+
+  # --- Route53 Validation Records for Vote Domain ---
+  - id: route53validation
+    includeWhen:
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(route53validation.status.ackResourceMetadata)}
+    template:
+      apiVersion: route53.services.k8s.aws/v1alpha1
+      kind: RecordSet
+      metadata:
+        name: ${schema.spec.name}-vote-validation
+        namespace: ${schema.spec.namespace}
+      spec:
+        hostedZoneID: ${schema.spec.domain.hostedZoneId}
+        name: ${acmcertificate.status.domainValidations[0].resourceRecord.name.split("." + schema.spec.domain.baseDomain)[0]}
+        recordType: ${acmcertificate.status.domainValidations[0].resourceRecord.type_}
+        ttl: 300
+        resourceRecords:
+        - value: ${acmcertificate.status.domainValidations[0].resourceRecord.value}
+
+  # --- Route53 Validation Records for Result Domain ---
+  - id: resultvalidation
+    includeWhen:
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(resultvalidation.status.ackResourceMetadata)}
+    template:
+      apiVersion: route53.services.k8s.aws/v1alpha1
+      kind: RecordSet
+      metadata:
+        name: ${schema.spec.name}-result-validation
+        namespace: ${schema.spec.namespace}
+      spec:
+        hostedZoneID: ${schema.spec.domain.hostedZoneId}
+        name: ${resultcertificate.status.domainValidations[0].resourceRecord.name.split("." + schema.spec.domain.baseDomain)[0]}
+        recordType: ${resultcertificate.status.domainValidations[0].resourceRecord.type_}
+        ttl: 300
+        resourceRecords:
+        - value: ${resultcertificate.status.domainValidations[0].resourceRecord.value}
+
+  # --- Vote Ingress (with SSL) ---
+  - id: voteingress
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(voteingress.status.loadBalancer)}
+      - ${has(voteingress.status.loadBalancer.ingress)}
+      - ${size(voteingress.status.loadBalancer.ingress) > 0}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-vote-ingress
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+          alb.ingress.kubernetes.io/certificate-arn: ${acmcertificate.status.ackResourceMetadata.arn}
+          alb.ingress.kubernetes.io/ssl-redirect: '443'
+        labels:
+          app: ${schema.spec.name}-vote
+      spec:
+        ingressClassName: alb
+        rules:
+        - host: vote.${schema.spec.domain.baseDomain}
+          http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.voteServiceName}
+                  port:
+                    number: 80
+
+  # --- Result Ingress (with SSL) ---
+  - id: resultingress
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(resultingress.status.loadBalancer)}
+      - ${has(resultingress.status.loadBalancer.ingress)}
+      - ${size(resultingress.status.loadBalancer.ingress) > 0}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-result-ingress
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+          alb.ingress.kubernetes.io/certificate-arn: ${resultcertificate.status.ackResourceMetadata.arn}
+          alb.ingress.kubernetes.io/ssl-redirect: '443'
+        labels:
+          app: ${schema.spec.name}-result
+      spec:
+        ingressClassName: alb
+        rules:
+        - host: result.${schema.spec.domain.baseDomain}
+          http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.resultServiceName}
+                  port:
+                    number: 80
+
+  # --- Vote Ingress (HTTP only) ---
+  - id: voteingresshttp
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${!schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(voteingresshttp.status.loadBalancer)}
+      - ${has(voteingresshttp.status.loadBalancer.ingress)}
+      - ${size(voteingresshttp.status.loadBalancer.ingress) > 0}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-vote-ingress-http
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-vote
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.voteServiceName}
+                  port:
+                    number: 80
+
+  # --- Result Ingress (HTTP only) ---
+  - id: resultingresshttp
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${!schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(resultingresshttp.status.loadBalancer)}
+      - ${has(resultingresshttp.status.loadBalancer.ingress)}
+      - ${size(resultingresshttp.status.loadBalancer.ingress) > 0}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-result-ingress-http
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-result
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.resultServiceName}
+                  port:
+                    number: 80
+
+  # --- Route53 DNS Records for Applications (SSL only) ---
+  - id: votednsrecord
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(votednsrecord.status.ackResourceMetadata)}
+    template:
+      apiVersion: route53.services.k8s.aws/v1alpha1
+      kind: RecordSet
+      metadata:
+        name: ${schema.spec.name}-vote-dns
+        namespace: ${schema.spec.namespace}
+      spec:
+        hostedZoneID: ${schema.spec.domain.hostedZoneId}
+        name: vote
+        recordType: CNAME
+        ttl: 300
+        resourceRecords:
+        - value: ${voteingress.status.loadBalancer.ingress[0].hostname}
+
+  - id: resultdnsrecord
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${schema.spec.acm.enabled}
+    readyWhen:
+      - ${has(resultdnsrecord.status.ackResourceMetadata)}
+    template:
+      apiVersion: route53.services.k8s.aws/v1alpha1
+      kind: RecordSet
+      metadata:
+        name: ${schema.spec.name}-result-dns
+        namespace: ${schema.spec.namespace}
+      spec:
+        hostedZoneID: ${schema.spec.domain.hostedZoneId}
+        name: result
+        recordType: CNAME
+        ttl: 300
+        resourceRecords:
+        - value: ${resultingress.status.loadBalancer.ingress[0].hostname}

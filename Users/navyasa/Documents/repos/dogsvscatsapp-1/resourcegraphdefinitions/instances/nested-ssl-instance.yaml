@@ -1,0 +1,32 @@
+apiVersion: v1alpha1
+kind: NestedVotingApp
+metadata:
+  name: dogsvscats-ssl-test
+  namespace: default
+spec:
+  name: dogsvscats-ssl-test
+  namespace: default
+  # Infrastructure - you'll need to provide these values
+  vpcID: "vpc-xxxxxxxxx"  # Replace with your VPC ID
+  subnetIDs: 
+    - "subnet-xxxxxxxxx"  # Replace with your subnet IDs
+    - "subnet-yyyyyyyyy"
+  # SSL configuration
+  domain:
+    enabled: true
+    hostedZoneId: "Z1234567890ABC"  # Replace with your hosted zone ID
+    baseDomain: "example.com"       # Replace with your domain
+  acm:
+    enabled: true   # SSL certificates enabled
+  ingress:
+    enabled: true   # SSL ingress enabled
+  service:
+    enabled: true
+  redis:
+    enabled: true
+  postgres:
+    enabled: true
+  # Use the new TLS-enabled images
+  voteImage: dogsvscats/vote:latest
+  resultImage: dogsvscats/result:latest
+  workerImage: dogsvscats/worker:latest

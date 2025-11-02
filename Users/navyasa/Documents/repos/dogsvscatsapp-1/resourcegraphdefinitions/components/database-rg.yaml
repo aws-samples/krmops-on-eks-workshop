@@ -1,0 +1,157 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: voting-database.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: VotingDatabase
+    spec:
+      name: string
+      namespace: string | default="default"
+      vpcID: string
+      subnetIDs: "[]string"
+      postgres:
+        enabled: boolean | default=true
+      redis:
+        enabled: boolean | default=true
+    status:
+      postgresEndpoint: ${postgresinstance.status.endpoint.address | optional}
+      redisEndpoint: ${redisserverless.status.endpoint.address | optional}
+      postgresSecretName: ${postgrespassword.metadata.name | optional}
+
+  resources:
+  # --- PostgreSQL Resources ---
+  - id: postgrespassword
+    includeWhen:
+      - ${schema.spec.postgres.enabled}
+    readyWhen:
+      - ${has(postgrespassword.data)}
+    template:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: ${schema.spec.name}-postgres-password
+        namespace: ${schema.spec.namespace}
+      type: Opaque
+      data:
+        password: cG9zdGdyZXM= # postgres
+
+  - id: postgressecuritygroup
+    includeWhen:
+      - ${schema.spec.postgres.enabled}
+    readyWhen:
+      - ${has(postgressecuritygroup.status.id)}
+    template:
+      apiVersion: ec2.services.k8s.aws/v1alpha1
+      kind: SecurityGroup
+      metadata:
+        name: ${schema.spec.name}-postgres-sg
+        namespace: ${schema.spec.namespace}
+      spec:
+        description: "PostgreSQL RDS security group for voting app"
+        name: ${schema.spec.name}-postgres-sg
+        vpcID: ${schema.spec.vpcID}
+        ingressRules:
+        - ipProtocol: tcp
+          ipRanges:
+          - cidrIP: "10.0.0.0/16"
+          fromPort: 5432
+          toPort: 5432
+
+  - id: postgressubnetgroup
+    includeWhen:
+      - ${schema.spec.postgres.enabled}
+    readyWhen:
+      - ${has(postgressubnetgroup.status.ackResourceMetadata)}
+    template:
+      apiVersion: rds.services.k8s.aws/v1alpha1
+      kind: DBSubnetGroup
+      metadata:
+        name: ${schema.spec.name}-postgres-subnet-group
+        namespace: ${schema.spec.namespace}
+      spec:
+        description: "PostgreSQL RDS subnet group for voting app"
+        name: ${schema.spec.name}-postgres-subnet-group
+        subnetIDs: ${schema.spec.subnetIDs}
+
+  - id: postgresinstance
+    includeWhen:
+      - ${schema.spec.postgres.enabled}
+    readyWhen:
+      - ${postgresinstance.status.dbInstanceStatus == "available"}
+      - ${has(postgresinstance.status.endpoint)}
+    template:
+      apiVersion: rds.services.k8s.aws/v1alpha1
+      kind: DBInstance
+      metadata:
+        name: ${schema.spec.name}-postgres
+        namespace: ${schema.spec.namespace}
+      spec:
+        allocatedStorage: 20
+        dbInstanceClass: db.t4g.micro
+        dbInstanceIdentifier: ${schema.spec.name}-postgres
+        backupRetentionPeriod: 0
+        engine: postgres
+        engineVersion: "16.3"
+        masterUsername: "postgres"
+        dbSubnetGroupRef: 
+          from: 
+            name: ${schema.spec.name}-postgres-subnet-group
+        vpcSecurityGroupRefs:
+          - from: 
+              name: ${schema.spec.name}-postgres-sg
+        masterUserPassword:
+          namespace: ${schema.spec.namespace}
+          name: ${schema.spec.name}-postgres-password
+          key: password
+        dbName: postgres
+
+  # --- Redis Resources ---
+  - id: redissecuritygroup
+    includeWhen:
+      - ${schema.spec.redis.enabled}
+    readyWhen:
+      - ${has(redissecuritygroup.status.id)}
+    template:
+      apiVersion: ec2.services.k8s.aws/v1alpha1
+      kind: SecurityGroup
+      metadata:
+        name: ${schema.spec.name}-redis-sg
+        namespace: ${schema.spec.namespace}
+      spec:
+        name: ${schema.spec.name}-redis-sg
+        description: "Redis ElastiCache security group for voting app"
+        vpcID: ${schema.spec.vpcID}
+        ingressRules:
+        - fromPort: 6379
+          toPort: 6379
+          ipProtocol: tcp
+          ipRanges:
+          - cidrIP: "10.0.0.0/16"
+
+  - id: redisserverless
+    includeWhen:
+      - ${schema.spec.redis.enabled}
+    readyWhen:
+      - ${redisserverless.status.status == "available"}
+      - ${has(redisserverless.status.endpoint.address)}
+    template:
+      apiVersion: elasticache.services.k8s.aws/v1alpha1
+      kind: ServerlessCache
+      metadata:
+        name: ${schema.spec.name}-redis
+        namespace: ${schema.spec.namespace}
+      spec:
+        serverlessCacheName: ${schema.spec.name}-redis
+        engine: redis
+        description: "Redis Serverless cache for voting app"
+        cacheUsageLimits:
+          dataStorage:
+            maximum: 1
+            unit: GB
+          eCPUPerSecond:
+            maximum: 1000
+        subnetIDs: ${schema.spec.subnetIDs}
+        securityGroupIDs:
+        - ${redissecuritygroup.status.id}

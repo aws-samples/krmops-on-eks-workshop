@@ -1,0 +1,156 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: nested-voting-app.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: NestedVotingApp
+    spec:
+      name: string
+      namespace: string | default="default"
+      # Infrastructure Configuration
+      vpcID: string
+      subnetIDs: "[]string"
+      # Domain Configuration
+      domain:
+        enabled: boolean | default=false
+        hostedZoneId: string | optional
+        baseDomain: string | optional
+      # Feature Flags
+      acm:
+        enabled: boolean | default=true
+      ingress:
+        enabled: boolean | default=true
+      service:
+        enabled: boolean | default=true
+      postgres:
+        enabled: boolean | default=true
+      redis:
+        enabled: boolean | default=true
+      # Application Configuration
+      voteImage: string | default="dogsvscats/vote:latest"
+      resultImage: string | default="dogsvscats/result:latest"
+      workerImage: string | default="dogsvscats/worker:latest"
+      voteReplicas: integer | default=2
+      resultReplicas: integer | default=1
+      workerReplicas: integer | default=1
+    status:
+      voteReplicas: ${voteapp.status.availableReplicas}
+      resultReplicas: ${resultapp.status.availableReplicas}
+      workerReplicas: ${workerapp.status.availableReplicas}
+      postgresEndpoint: ${database.status.postgresEndpoint | optional}
+      redisEndpoint: ${database.status.redisEndpoint | optional}
+      # SSL Ingress URLs (when domain and ACM enabled)
+      voteIngressUrl: ${ssldomain.status.voteIngressHostname | optional}
+      resultIngressUrl: ${ssldomain.status.resultIngressHostname | optional}
+      # HTTP Ingress URLs (when domain and ACM disabled)
+      voteIngressHttpUrl: ${ssldomain.status.voteIngressHttpHostname | optional}
+      resultIngressHttpUrl: ${ssldomain.status.resultIngressHttpHostname | optional}
+
+  resources:
+  # --- Database Infrastructure ---
+  - id: database
+    readyWhen:
+      - ${has(database.status) || true}
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: VotingDatabase
+      metadata:
+        name: ${schema.spec.name}-db
+        namespace: ${schema.spec.namespace}
+      spec:
+        name: ${schema.spec.name}
+        namespace: ${schema.spec.namespace}
+        vpcID: ${schema.spec.vpcID}
+        subnetIDs: ${schema.spec.subnetIDs}
+        postgres:
+          enabled: ${schema.spec.postgres.enabled}
+        redis:
+          enabled: ${schema.spec.redis.enabled}
+
+  # --- Vote Application ---
+  - id: voteapp
+    readyWhen:
+      - ${has(voteapp.status.availableReplicas)}
+      - ${voteapp.status.availableReplicas > 0}
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: VoteApp
+      metadata:
+        name: ${schema.spec.name}-vote-app
+        namespace: ${schema.spec.namespace}
+      spec:
+        name: ${schema.spec.name}
+        namespace: ${schema.spec.namespace}
+        image: ${schema.spec.voteImage}
+        replicas: ${schema.spec.voteReplicas}
+        redisEndpoint: ${database.status.redisEndpoint | optional}
+        service:
+          enabled: ${schema.spec.service.enabled}
+
+  # --- Result Application ---
+  - id: resultapp
+    readyWhen:
+      - ${has(resultapp.status.availableReplicas)}
+      - ${resultapp.status.availableReplicas > 0}
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: ResultApp
+      metadata:
+        name: ${schema.spec.name}-result-app
+        namespace: ${schema.spec.namespace}
+      spec:
+        name: ${schema.spec.name}
+        namespace: ${schema.spec.namespace}
+        image: ${schema.spec.resultImage}
+        replicas: ${schema.spec.resultReplicas}
+        postgresEndpoint: ${database.status.postgresEndpoint | optional}
+        postgresSecretName: ${database.status.postgresSecretName | optional}
+        service:
+          enabled: ${schema.spec.service.enabled}
+
+  # --- Worker Application ---
+  - id: workerapp
+    readyWhen:
+      - ${has(workerapp.status.availableReplicas)}
+      - ${workerapp.status.availableReplicas > 0}
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: WorkerApp
+      metadata:
+        name: ${schema.spec.name}-worker-app
+        namespace: ${schema.spec.namespace}
+      spec:
+        name: ${schema.spec.name}
+        namespace: ${schema.spec.namespace}
+        image: ${schema.spec.workerImage}
+        replicas: ${schema.spec.workerReplicas}
+        redisEndpoint: ${database.status.redisEndpoint | optional}
+        postgresEndpoint: ${database.status.postgresEndpoint | optional}
+        postgresSecretName: ${database.status.postgresSecretName | optional}
+
+  # --- SSL and Domain Management (for SSL scenarios) ---
+  - id: ssldomain
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+    readyWhen:
+      - ${has(ssldomain.status) || true}
+    template:
+      apiVersion: kro.run/v1alpha1
+      kind: SslDomain
+      metadata:
+        name: ${schema.spec.name}-ssl-domain
+        namespace: ${schema.spec.namespace}
+      spec:
+        name: ${schema.spec.name}
+        namespace: ${schema.spec.namespace}
+        domain:
+          hostedZoneId: ${schema.spec.domain.hostedZoneId | optional}
+          baseDomain: ${schema.spec.domain.baseDomain | optional}
+        voteServiceName: ${voteapp.status.serviceName}
+        resultServiceName: ${resultapp.status.serviceName}
+        acm:
+          enabled: ${schema.spec.acm.enabled}
+        ingress:
+          enabled: ${schema.spec.ingress.enabled}

@@ -1,0 +1,89 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: http-ingress.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: HttpIngress
+    spec:
+      name: string
+      namespace: string | default="default"
+      voteServiceName: string
+      resultServiceName: string
+      ingress:
+        enabled: boolean | default=true
+    status:
+      voteIngressUrl: ${voteingress.status.loadBalancer.ingress[0].hostname | optional}
+      resultIngressUrl: ${resultingress.status.loadBalancer.ingress[0].hostname | optional}
+      voteIngressHostname: ${voteingress.status.loadBalancer.ingress[0].hostname | optional}
+      resultIngressHostname: ${resultingress.status.loadBalancer.ingress[0].hostname | optional}
+
+  resources:
+  # --- Vote Ingress (HTTP only) ---
+  - id: voteingress
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+    readyWhen:
+      - ${has(voteingress.status.loadBalancer)}
+      - ${has(voteingress.status.loadBalancer.ingress)}
+      - ${size(voteingress.status.loadBalancer.ingress) > 0}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-vote-ingress-http
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-vote
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.voteServiceName}
+                  port:
+                    number: 80
+
+  # --- Result Ingress (HTTP only) ---
+  - id: resultingress
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+    readyWhen:
+      - ${has(resultingress.status.loadBalancer)}
+      - ${has(resultingress.status.loadBalancer.ingress)}
+      - ${size(resultingress.status.loadBalancer.ingress) > 0}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-result-ingress-http
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-result
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.resultServiceName}
+                  port:
+                    number: 80

@@ -1,0 +1,60 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: worker-app.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: WorkerApp
+    spec:
+      name: string
+      namespace: string | default="default"
+      image: string | default="dogsvscats/worker:latest"
+      replicas: integer | default=1
+      redisEndpoint: string | optional
+      postgresEndpoint: string | optional
+      postgresSecretName: string | optional
+    status:
+      availableReplicas: ${workerdeployment.status.availableReplicas}
+
+  resources:
+  # --- Worker Deployment ---
+  - id: workerdeployment
+    readyWhen:
+      - ${workerdeployment.spec.replicas == workerdeployment.status.availableReplicas}
+    template:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ${schema.spec.name}-worker
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-worker
+      spec:
+        replicas: ${schema.spec.replicas}
+        selector:
+          matchLabels:
+            app: ${schema.spec.name}-worker
+        template:
+          metadata:
+            labels:
+              app: ${schema.spec.name}-worker
+          spec:
+            containers:
+            - name: worker
+              image: ${schema.spec.image}
+              env:
+              - name: REDIS_HOST
+                value: ${schema.spec.redisEndpoint | optional}
+              - name: POSTGRES_HOST
+                value: ${schema.spec.postgresEndpoint | optional}
+              - name: POSTGRES_USER
+                value: "postgres"
+              - name: POSTGRES_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: ${schema.spec.postgresSecretName | optional}
+                    key: password
+                    optional: true
+              - name: POSTGRES_DB
+                value: "postgres"

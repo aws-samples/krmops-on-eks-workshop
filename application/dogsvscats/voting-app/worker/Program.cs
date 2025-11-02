@@ -106,16 +106,17 @@ namespace Worker
 
         private static ConnectionMultiplexer OpenRedisConnection(string hostname)
         {
-            // Use IP address to workaround https://github.com/StackExchange/StackExchange.Redis/issues/410
-            var ipAddress = GetIp(hostname);
-            Console.WriteLine($"Found redis at {ipAddress}");
+            Console.WriteLine($"Connecting to redis at {hostname}");
 
             while (true)
             {
                 try
                 {
                     Console.Error.WriteLine("Connecting to redis");
-                    return ConnectionMultiplexer.Connect(ipAddress);
+                    var config = ConfigurationOptions.Parse($"{hostname}:6379");
+                    config.Ssl = true;
+                    config.AbortOnConnectFail = false;
+                    return ConnectionMultiplexer.Connect(config);
                 }
                 catch (RedisConnectionException)
                 {

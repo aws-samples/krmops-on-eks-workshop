@@ -1,0 +1,85 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: result-app.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: ResultApp
+    spec:
+      name: string
+      namespace: string | default="default"
+      image: string | default="dogsvscats/result:latest"
+      replicas: integer | default=1
+      postgresEndpoint: string | optional
+      postgresSecretName: string | optional
+      service:
+        enabled: boolean | default=true
+    status:
+      availableReplicas: ${resultdeployment.status.availableReplicas}
+      serviceName: ${resultservice.metadata.name | optional}
+
+  resources:
+  # --- Result Deployment ---
+  - id: resultdeployment
+    readyWhen:
+      - ${resultdeployment.spec.replicas == resultdeployment.status.availableReplicas}
+    template:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ${schema.spec.name}-result
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-result
+      spec:
+        replicas: ${schema.spec.replicas}
+        selector:
+          matchLabels:
+            app: ${schema.spec.name}-result
+        template:
+          metadata:
+            labels:
+              app: ${schema.spec.name}-result
+          spec:
+            containers:
+            - name: result
+              image: ${schema.spec.image}
+              ports:
+              - containerPort: 80
+              env:
+              - name: POSTGRES_HOST
+                value: ${schema.spec.postgresEndpoint | optional}
+              - name: POSTGRES_USER
+                value: "postgres"
+              - name: POSTGRES_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: ${schema.spec.postgresSecretName | optional}
+                    key: password
+                    optional: true
+              - name: POSTGRES_DB
+                value: "postgres"
+
+  # --- Result Service ---
+  - id: resultservice
+    includeWhen:
+      - ${schema.spec.service.enabled}
+    readyWhen:
+      - ${has(resultservice.spec.clusterIP)}
+    template:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ${schema.spec.name}-result-service
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-result
+      spec:
+        selector:
+          app: ${schema.spec.name}-result
+        ports:
+        - port: 80
+          targetPort: 80
+          protocol: TCP
+        type: ClusterIP

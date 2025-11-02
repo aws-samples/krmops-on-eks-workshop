@@ -308,6 +308,40 @@ spec:
                   port:
                     number: 80
 
+  # --- Vote Ingress (HTTP only) ---
+  - id: voteingresshttp
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${!schema.spec.acm.enabled}
+      - ${!schema.spec.domain.enabled}
+    readyWhen:
+      - ${has(voteingresshttp.status.loadBalancer)}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-vote-ingress-http
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-vote
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.name}-vote-service
+                  port:
+                    number: 80
+
 
 
   # --- Result App Deployment ---
@@ -401,6 +435,40 @@ spec:
         rules:
         - host: results.${schema.spec.domain.subdomain}.${schema.spec.domain.baseDomain}
           http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: ${schema.spec.name}-result-service
+                  port:
+                    number: 80
+
+  # --- Result Ingress (HTTP only) ---
+  - id: resultingresshttp
+    includeWhen:
+      - ${schema.spec.ingress.enabled}
+      - ${!schema.spec.acm.enabled}
+      - ${!schema.spec.domain.enabled}
+    readyWhen:
+      - ${has(resultingresshttp.status.loadBalancer)}
+    template:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ${schema.spec.name}-result-ingress-http
+        namespace: ${schema.spec.namespace}
+        annotations:
+          kubernetes.io/ingress.class: alb
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+        labels:
+          app: ${schema.spec.name}-result
+      spec:
+        ingressClassName: alb
+        rules:
+        - http:
             paths:
             - path: /
               pathType: Prefix

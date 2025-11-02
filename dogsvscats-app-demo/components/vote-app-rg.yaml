@@ -1,0 +1,74 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: vote-app.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: VoteApp
+    spec:
+      name: string
+      namespace: string | default="default"
+      image: string | default="dogsvscats/vote:latest"
+      replicas: integer | default=2
+      redisEndpoint: string | optional
+      service:
+        enabled: boolean | default=true
+    status:
+      availableReplicas: ${votedeployment.status.availableReplicas}
+      serviceName: ${voteservice.metadata.name | optional}
+
+  resources:
+  # --- Vote Deployment ---
+  - id: votedeployment
+    readyWhen:
+      - ${votedeployment.spec.replicas == votedeployment.status.availableReplicas}
+    template:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ${schema.spec.name}-vote
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-vote
+      spec:
+        replicas: ${schema.spec.replicas}
+        selector:
+          matchLabels:
+            app: ${schema.spec.name}-vote
+        template:
+          metadata:
+            labels:
+              app: ${schema.spec.name}-vote
+          spec:
+            containers:
+            - name: vote
+              image: ${schema.spec.image}
+              ports:
+              - containerPort: 80
+              env:
+              - name: REDIS_HOST
+                value: ${schema.spec.redisEndpoint | optional}
+
+  # --- Vote Service ---
+  - id: voteservice
+    includeWhen:
+      - ${schema.spec.service.enabled}
+    readyWhen:
+      - ${has(voteservice.spec.clusterIP)}
+    template:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ${schema.spec.name}-vote-service
+        namespace: ${schema.spec.namespace}
+        labels:
+          app: ${schema.spec.name}-vote
+      spec:
+        selector:
+          app: ${schema.spec.name}-vote
+        ports:
+        - port: 80
+          targetPort: 80
+          protocol: TCP
+        type: ClusterIP

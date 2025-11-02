@@ -1,0 +1,23 @@
+apiVersion: v1alpha1
+kind: VotingApp
+metadata:
+  name: dogsvscats-http
+  namespace: default
+spec:
+  name: dogsvscats-http
+  namespace: default
+  voteImage: dogsvscats/vote:latest
+  resultImage: dogsvscats/result:latest
+  workerImage: dogsvscats/worker:latest
+  domain:
+    enabled: false  # Disable domain
+  acm:
+    enabled: false  # Disable ACM certificates
+  ingress:
+    enabled: true   # Enable HTTP-only ingress
+  service:
+    enabled: true
+  redis:
+    enabled: true
+  postgres:
+    enabled: true
