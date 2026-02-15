@@ -1,25 +1,27 @@
 #---------------------------------------------------------------
-# EKS Cluster
+# EKS Cluster with Auto Mode
 #---------------------------------------------------------------
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.33"
+  version = "~> 21.15"
 
-  cluster_name                   = local.name
-  cluster_version                = local.cluster_version
-  cluster_endpoint_public_access = true
+  name               = local.name
+  kubernetes_version = var.cluster_version
 
-  # Give the Terraform identity admin access to the cluster
-  # which will allow resources to be deployed into the cluster
-  enable_cluster_creator_admin_permissions = true
-
-  cluster_compute_config = {
+  # Auto mode configuration
+  compute_config = {
     enabled    = true
     node_pools = ["general-purpose"]
   }
+  
+  # Give the Terraform identity admin access to the cluster
+  enable_cluster_creator_admin_permissions = true
 
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
+  # VPC configuration
+  vpc_id                  = module.vpc.vpc_id
+  subnet_ids              = module.vpc.private_subnets
+  endpoint_public_access  = true
+  endpoint_private_access = true
 
   tags = local.tags
 }

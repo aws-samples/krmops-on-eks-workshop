@@ -1,5 +1,5 @@
 #---------------------------------------------------------------
-# EKS Addons
+# EKS Addons (Upgraded to use EKS Capabilities)
 #---------------------------------------------------------------
 
 module "eks_blueprints_addons" {
@@ -11,94 +11,140 @@ module "eks_blueprints_addons" {
   cluster_version   = module.eks.cluster_version
   oidc_provider_arn = module.eks.oidc_provider_arn
 
-  enable_argocd = true
-  argocd = {
-    namespace     = "argocd"
-    chart_version = "7.6.12" # ArgoCD v2.12.6
-    values = [
-      templatefile("${path.module}/helm-values/argocd.yaml", {
-    })]
-  }
-  enable_metrics_server               = true
-  enable_external_secrets             = true
-  enable_external_dns                 = true
-  external_dns_route53_zone_arns      = ["arn:aws:route53:::hostedzone/Z07589007ZVX1K0A3C82"]
+  # Note: ArgoCD is now managed via EKS Capability below
+  # enable_argocd = false
+
+  enable_metrics_server                            = true
+  enable_external_secrets                          = true
+  enable_external_dns                              = true
+  external_dns_route53_zone_arns                   = ["arn:aws:route53:::hostedzone/Z07589007ZVX1K0A3C82"]
+  
+  # Required for RDS ResourceGraphDefinition to use SecretProviderClass
+  enable_secrets_store_csi_driver                  = true
+  enable_secrets_store_csi_driver_provider_aws     = true
 
   depends_on = [module.eks.cluster_addons]
 }
 
 ################################################################################
-# ACK Addons
+# ArgoCD - Using EKS Capability
+# NOTE: ArgoCD capability requires AWS IAM Identity Center (SSO) configuration
+# Uncomment and configure when you have IAM Identity Center set up
 ################################################################################
-module "eks_ack_addons" {
-  source = "aws-ia/eks-ack-addons/aws"
+# module "argocd_capability" {
+#   source = "terraform-aws-modules/eks/aws//modules/capability"
+#   version = "~> 21.15"
+#
+#   name         = "${local.name}-argocd"
+#   cluster_name = module.eks.cluster_name
+#   type         = "ARGOCD"
+#
+#   # ArgoCD configuration with AWS IAM Identity Center
+#   configuration = {
+#     argo_cd = {
+#       aws_idc = {
+#         idc_instance_arn = "arn:aws:sso:::instance/YOUR-SSO-INSTANCE-ID"
+#       }
+#       namespace = "argocd"
+#     }
+#   }
+#
+#   # IAM Role/Policy for ArgoCD
+#   iam_policy_statements = {
+#     ECRRead = {
+#       actions = [
+#         "ecr:GetAuthorizationToken",
+#         "ecr:BatchCheckLayerAvailability",
+#         "ecr:GetDownloadUrlForLayer",
+#         "ecr:BatchGetImage",
+#       ]
+#       resources = ["*"]
+#     }
+#   }
+#
+#   tags = local.tags
+#
+#   depends_on = [module.eks]
+# }
 
-  # Cluster Info
-  cluster_name      = module.eks.cluster_name
-  cluster_endpoint  = module.eks.cluster_endpoint
-  oidc_provider_arn = module.eks.oidc_provider_arn
+################################################################################
+# ACK - Using EKS Capability
+################################################################################
+module "ack_capability" {
+  source = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.15"
 
-  # ECR Credentials
-  ecrpublic_username = data.aws_ecrpublic_authorization_token.token.user_name
-  ecrpublic_token    = data.aws_ecrpublic_authorization_token.token.password
+  name         = "${local.name}-ack"
+  cluster_name = module.eks.cluster_name
+  type         = "ACK"
 
-  # Controllers to enable
-  enable_iam               = true
-  iam = {
-    chart_version = "1.3.17"
+  # IAM Role/Policy for ACK Controllers
+  # For POC/dev: giving admin access to manage all AWS resources
+  iam_role_policies = {
+    AdminAccess = "arn:aws:iam::aws:policy/AdministratorAccess"
   }
-  enable_ec2               = true
-  ec2 = {
-    chart_version = "1.3.5"
-  }
-  enable_eks               = true
-  eks = {
-    chart_version = "1.6.1"
-  }
-  enable_kms               = true
-  kms = {
-    chart_version = "1.0.21"
-  }
-  enable_dynamodb          = true
-  dynamodb = {
-    chart_version = "1.2.18"
-  }
-  enable_s3                = true
-  s3 = {
-    chart_version = "1.0.23"
-  }
-  enable_rds               = true
-  rds = {
-    chart_version = "1.4.10"
-  }
-  enable_secretsmanager    = true
 
   tags = local.tags
+
+  depends_on = [module.eks]
 }
 
-#########################################
-# KRO
-#########################################
-module "kro" {
-  source  = "aws-ia/eks-blueprints-addon/aws"
-  version = "1.1.1"
+################################################################################
+# KRO - Using EKS Capability
+################################################################################
+module "kro_capability" {
+  source = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.15"
 
-  name             = "kro"
-  description      = "A Helm chart to deploy kro"
-  namespace        = "kro"
-  create_namespace = true
-  chart            = "kro"
-  chart_version    = "0.3.0"
-  repository       = "oci://ghcr.io/kro-run/kro"
+  name         = "${local.name}-kro"
+  cluster_name = module.eks.cluster_name
+  type         = "KRO"
 
-  set = [
-    {
-      name  = "config.dynamicControllerDefaultResyncPeriod"
-      value = "180"
-    },
-    {
-      name  = "config.dynamicControllerConcurrentReconciles"
-      value = "20"
-    }
-  ]
+  # KRO needs permissions to manage Kubernetes resources and potentially AWS resources
+  # For POC/dev: giving admin access
+  iam_role_policies = {
+    AdminAccess = "arn:aws:iam::aws:policy/AdministratorAccess"
+  }
+
+  tags = local.tags
+
+  depends_on = [module.eks]
+}
+
+# Grant KRO additional Kubernetes permissions to create resources defined in RGDs
+# The capability module creates an access entry with AmazonEKSKROPolicy by default,
+# but KRO needs additional permissions to manage arbitrary Kubernetes resources
+resource "aws_eks_access_policy_association" "kro_cluster_admin" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.kro_capability.iam_role_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [module.kro_capability]
+}
+
+################################################################################
+# Outputs for the new capabilities
+################################################################################
+# output "argocd_capability_arn" {
+#   description = "ARN of the ArgoCD capability"
+#   value       = module.argocd_capability.arn
+# }
+
+# output "argocd_server_url" {
+#   description = "URL of the ArgoCD server"
+#   value       = module.argocd_capability.argocd_server_url
+# }
+
+output "ack_capability_arn" {
+  description = "ARN of the ACK capability"
+  value       = module.ack_capability.arn
+}
+
+output "kro_capability_arn" {
+  description = "ARN of the KRO capability"
+  value       = module.kro_capability.arn
 }
