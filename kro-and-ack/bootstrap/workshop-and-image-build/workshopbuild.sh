@@ -124,107 +124,107 @@ cp -R rdswebstack /home/ec2-user/environment/krmops-on-eks/kro
 cp -R webapprds /home/ec2-user/environment/krmops-on-eks/kro
 cp -R s3adopt /home/ec2-user/environment/krmops-on-eks/kro
 
-# ========================================
-# Find the first IAM role that starts with "ack-rds-"
-# ========================================
-echo "Finding IAM role starting with 'ack-rds-'..."
-ROLE_NAME=$(aws iam list-roles --query "Roles[?starts_with(RoleName, 'ack-rds-')].RoleName" --output text | head -n 1)
+# # ========================================
+# # Find the first IAM role that starts with "ack-rds-"
+# # ========================================
+# echo "Finding IAM role starting with 'ack-rds-'..."
+# ROLE_NAME=$(aws iam list-roles --query "Roles[?starts_with(RoleName, 'ack-rds-')].RoleName" --output text | head -n 1)
 
-if [ -z "$ROLE_NAME" ]; then
-    echo "No role starting with 'ack-rds-' was found."
-    exit 1
-fi
+# if [ -z "$ROLE_NAME" ]; then
+#     echo "No role starting with 'ack-rds-' was found."
+#     exit 1
+# fi
 
-echo "Found role: $ROLE_NAME"
+# echo "Found role: $ROLE_NAME"
 
-# ========================================
-# Create a policy document for KMS permissions
-# ========================================
-echo "Creating KMS policy document..."
-cat > kms-policy.json << EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:GenerateDataKey*",
-                "kms:ReEncrypt*"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
-EOF
+# # ========================================
+# # Create a policy document for KMS permissions
+# # ========================================
+# echo "Creating KMS policy document..."
+# cat > kms-policy.json << EOF
+# {
+#     "Version": "2012-10-17",
+#     "Statement": [
+#         {
+#             "Effect": "Allow",
+#             "Action": [
+#                 "kms:Decrypt",
+#                 "kms:DescribeKey",
+#                 "kms:Encrypt",
+#                 "kms:GenerateDataKey*",
+#                 "kms:ReEncrypt*"
+#             ],
+#             "Resource": "*"
+#         }
+#     ]
+# }
+# EOF
 
-# ========================================
-# Create a policy document for Secrets Manager permissions
-# ========================================
-echo "Creating Secrets Manager policy document..."
-cat > secretsmanager-policy.json << EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "secretsmanager:GetResourcePolicy",
-                "secretsmanager:GetSecretValue",
-                "secretsmanager:DescribeSecret",
-                "secretsmanager:ListSecretVersionIds",
-                "secretsmanager:CreateSecret",
-                "secretsmanager:PutSecretValue",
-                "secretsmanager:GetSecretValue",
-                "secretsmanager:UpdateSecret",
-                "secretsmanager:DeleteSecret",
-                "secretsmanager:TagResource"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
-EOF
+# # ========================================
+# # Create a policy document for Secrets Manager permissions
+# # ========================================
+# echo "Creating Secrets Manager policy document..."
+# cat > secretsmanager-policy.json << EOF
+# {
+#     "Version": "2012-10-17",
+#     "Statement": [
+#         {
+#             "Effect": "Allow",
+#             "Action": [
+#                 "secretsmanager:GetResourcePolicy",
+#                 "secretsmanager:GetSecretValue",
+#                 "secretsmanager:DescribeSecret",
+#                 "secretsmanager:ListSecretVersionIds",
+#                 "secretsmanager:CreateSecret",
+#                 "secretsmanager:PutSecretValue",
+#                 "secretsmanager:GetSecretValue",
+#                 "secretsmanager:UpdateSecret",
+#                 "secretsmanager:DeleteSecret",
+#                 "secretsmanager:TagResource"
+#             ],
+#             "Resource": "*"
+#         }
+#     ]
+# }
+# EOF
 
-# ========================================
-# Create the policies in AWS
-# ========================================
-echo "Creating KMS policy in AWS..."
-KMS_POLICY_ARN=$(aws iam create-policy \
-    --policy-name "${ROLE_NAME}-kms-policy" \
-    --policy-document file://kms-policy.json \
-    --query 'Policy.Arn' \
-    --output text)
+# # ========================================
+# # Create the policies in AWS
+# # ========================================
+# echo "Creating KMS policy in AWS..."
+# KMS_POLICY_ARN=$(aws iam create-policy \
+#     --policy-name "${ROLE_NAME}-kms-policy" \
+#     --policy-document file://kms-policy.json \
+#     --query 'Policy.Arn' \
+#     --output text)
 
-echo "Creating Secrets Manager policy in AWS..."
-SM_POLICY_ARN=$(aws iam create-policy \
-    --policy-name "${ROLE_NAME}-secretsmanager-policy" \
-    --policy-document file://secretsmanager-policy.json \
-    --query 'Policy.Arn' \
-    --output text)
+# echo "Creating Secrets Manager policy in AWS..."
+# SM_POLICY_ARN=$(aws iam create-policy \
+#     --policy-name "${ROLE_NAME}-secretsmanager-policy" \
+#     --policy-document file://secretsmanager-policy.json \
+#     --query 'Policy.Arn' \
+#     --output text)
 
-# ========================================
-# Attach the policies to the role
-# ========================================
-echo "Attaching KMS policy to role..."
-aws iam attach-role-policy \
-    --role-name "$ROLE_NAME" \
-    --policy-arn "$KMS_POLICY_ARN"
+# # ========================================
+# # Attach the policies to the role
+# # ========================================
+# echo "Attaching KMS policy to role..."
+# aws iam attach-role-policy \
+#     --role-name "$ROLE_NAME" \
+#     --policy-arn "$KMS_POLICY_ARN"
 
-echo "Attaching Secrets Manager policy to role..."
-aws iam attach-role-policy \
-    --role-name "$ROLE_NAME" \
-    --policy-arn "$SM_POLICY_ARN"
-# ========================================
-# Clean up temporary files
-# ========================================
-rm -f kms-policy.json secretsmanager-policy.json
+# echo "Attaching Secrets Manager policy to role..."
+# aws iam attach-role-policy \
+#     --role-name "$ROLE_NAME" \
+#     --policy-arn "$SM_POLICY_ARN"
+# # ========================================
+# # Clean up temporary files
+# # ========================================
+# rm -f kms-policy.json secretsmanager-policy.json
 
-echo "Successfully added KMS and Secrets Manager permissions to role: $ROLE_NAME"
-echo "KMS Policy ARN: $KMS_POLICY_ARN"
-echo "Secrets Manager Policy ARN: $SM_POLICY_ARN"
+# echo "Successfully added KMS and Secrets Manager permissions to role: $ROLE_NAME"
+# echo "KMS Policy ARN: $KMS_POLICY_ARN"
+# echo "Secrets Manager Policy ARN: $SM_POLICY_ARN"
 
 # ========================================
 # Install secret provider
