@@ -230,11 +230,11 @@ cp -R s3adopt /home/ec2-user/environment/krmops-on-eks/kro
 # Install secret provider
 # ========================================
 
- su ec2-user -c 'helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts'
- su ec2-user -c 'helm install -n kube-system csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver'
+#  su ec2-user -c 'helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts'
+#  su ec2-user -c 'helm install -n kube-system csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver'
 
- su ec2-user -c 'kubectl apply -f \
-  https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml'
+#  su ec2-user -c 'kubectl apply -f \
+#   https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml'
 
 
 # ========================================
