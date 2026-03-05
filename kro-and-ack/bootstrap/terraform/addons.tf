@@ -20,8 +20,13 @@ module "eks_blueprints_addons" {
   external_dns_route53_zone_arns                   = ["arn:aws:route53:::hostedzone/Z07589007ZVX1K0A3C82"]
   
   # Required for RDS ResourceGraphDefinition to use SecretProviderClass
-  enable_secrets_store_csi_driver                  = true
-  enable_secrets_store_csi_driver_provider_aws     = true
+  enable_secrets_store_csi_driver              = true
+  enable_secrets_store_csi_driver_provider_aws = true
+  
+  # Use latest version that supports EKS Pod Identity
+  secrets_store_csi_driver_provider_aws = {
+    chart_version = "0.3.11"
+  }
 
   depends_on = [module.eks.cluster_addons]
 }
