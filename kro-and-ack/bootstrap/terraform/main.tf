@@ -65,6 +65,6 @@ locals {
 
   tags = {
     Blueprint  = local.name
-    GithubRepo = "github.com/awslabs/crossplane-on-eks"
+    GithubRepo = "github.com/aws-samples/krmops-on-eks-workshop"
   }
 }
