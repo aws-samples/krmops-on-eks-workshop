@@ -1,39 +1,48 @@
-var app = angular.module('catsvsdogs', []);
 var socket = io.connect();
 
 var bg1 = document.getElementById('background-stats-1');
 var bg2 = document.getElementById('background-stats-2');
+var catsPercent = document.getElementById('cats-percent');
+var dogsPercent = document.getElementById('dogs-percent');
+var result = document.getElementById('result');
 
-app.controller('statsCtrl', function($scope){
-  $scope.aPercent = 50;
-  $scope.bPercent = 50;
+function formatPercent(value) {
+  return value.toFixed(1) + '%';
+}
 
-  var updateScores = function(){
-    socket.on('scores', function (json) {
-       data = JSON.parse(json);
-       var a = parseInt(data.a || 0);
-       var b = parseInt(data.b || 0);
+function resultText(total) {
+  if (total == 0) {
+    return 'No votes yet';
+  } else if (total == 1) {
+    return total + ' vote';
+  }
+  return total + ' votes';
+}
 
-       var percentages = getPercentages(a, b);
+var updateScores = function(){
+  socket.on('scores', function (json) {
+     var data = JSON.parse(json);
+     var a = parseInt(data.a || 0);
+     var b = parseInt(data.b || 0);
 
-       bg1.style.width = percentages.a + "%";
-       bg2.style.width = percentages.b + "%";
+     var percentages = getPercentages(a, b);
 
-       $scope.$apply(function () {
-         $scope.aPercent = percentages.a;
-         $scope.bPercent = percentages.b;
-         $scope.total = a + b;
-       });
-    });
-  };
+     bg1.style.width = percentages.a + "%";
+     bg2.style.width = percentages.b + "%";
 
-  var init = function(){
-    document.body.style.opacity=1;
-    updateScores();
-  };
-  socket.on('message',function(data){
-    init();
+     catsPercent.textContent = formatPercent(percentages.a);
+     dogsPercent.textContent = formatPercent(percentages.b);
+     result.textContent = resultText(a + b);
   });
+};
+
+var init = function(){
+  document.body.style.opacity=1;
+  updateScores();
+};
+
+socket.on('message',function(data){
+  init();
 });
 
 function getPercentages(a, b) {
