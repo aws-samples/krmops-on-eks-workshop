@@ -19,7 +19,7 @@ terraform {
   # For multi-attendee workshops switch to an S3 backend:
   # backend "s3" {
   #   bucket = "krmops-workshop-tf-state"
-  #   key    = "workshop-tf-baseline/${var.workshop_id}/terraform.tfstate"
+  #   key    = "rds-tf-baseline/${var.workshop_id}/terraform.tfstate"
   #   region = "us-west-2"
   # }
 }
@@ -30,7 +30,7 @@ provider "aws" {
   default_tags {
     tags = {
       Workshop   = "krmops-on-eks"
-      Module     = "workshop-tf-baseline"
+      Module     = "rds-tf-baseline"
       WorkshopID = var.workshop_id
       ManagedBy  = "Terraform"
     }

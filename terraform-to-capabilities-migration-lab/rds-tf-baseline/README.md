@@ -1,4 +1,4 @@
-# workshop-tf-baseline
+# rds-tf-baseline
 
 Terraform stack that reproduces the **Module IV RDS WebStack** (from the KRM/kro on EKS workshop) — but managed by Terraform instead of `kubectl`. This is what Module 5 migrates from.
 
@@ -14,14 +14,24 @@ Terraform stack that reproduces the **Module IV RDS WebStack** (from the KRM/kro
 **Kubernetes resources** (deployed via the `kubernetes` provider)
 - Namespace `webapp-rds`
 - ServiceAccount `webapp-sa`
-- `SecretProviderClass` (Secrets Store CSI driver) that mounts the RDS creds
-- Deployment (nginx-based demo image) with the volume mount + env vars from the CSI-projected secret
+- Secret `webapp-rds-creds` — RDS connection details (host, port, db, user, password), sourced by Terraform from the RDS instance + generated password
+- Deployment — a `postgres` client that connects to the RDS instance using the injected Secret and logs connectivity; the pod is **readiness-gated on a live DB connection**, so a successful `apply` means the estate is fully wired
 - Service (ClusterIP)
+
+> **Why a Kubernetes Secret and not the Secrets Store CSI driver?** The workshop
+> cluster runs in **EKS Auto Mode**, where the `eks-pod-identity-agent` DaemonSet
+> does not run (its affinity excludes `compute-type=auto` nodes). The AWS Secrets
+> Store CSI provider's Pod Identity mode depends on that node-local agent
+> endpoint, so it cannot vend credentials on Auto Mode. Delivering the RDS
+> credentials as a native Kubernetes Secret keeps the baseline working on any
+> cluster with no credential-vending dependency. The AWS Secrets Manager secret,
+> IAM role/policy, and EKS Pod Identity association are still provisioned — they
+> remain the AWS-side migration targets for Module V.
 
 ## Files
 
 ```
-workshop-tf-baseline/
+rds-tf-baseline/
 ├── README.md            (this file)
 ├── providers.tf         Provider config (aws, kubernetes) + backend
 ├── variables.tf         Inputs (cluster_name, region, workshop_id)
@@ -55,7 +65,7 @@ Takes ~8–10 min (RDS provisioning is the long tail).
 terraform state list
 terraform output
 kubectl get all -n webapp-rds
-kubectl get secretproviderclass -n webapp-rds
+kubectl logs -n webapp-rds -l app=webapp --tail=5   # expect "OK: connected to RDS ..."
 ```
 
 ## Destroy (after workshop)

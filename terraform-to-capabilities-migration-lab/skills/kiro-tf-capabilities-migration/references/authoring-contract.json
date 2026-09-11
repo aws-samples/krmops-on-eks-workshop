@@ -1,0 +1,164 @@
+{
+  "_comment": "Authoring contract handed to every Phase B (per-RGD authoring) subagent. Static JSON so N concurrent authors converge on the same conventions. Update in ONE place; never fork per subagent.",
+  "version": "2026-07-10",
+
+  "output_layout": {
+    "root": "migration-output/",
+    "per_rgd_dir": "<mode>/<rgd-name>/",
+    "files_per_rgd": ["rgd.yaml", "instance.yaml", "resources/*.yaml"],
+    "mode_level_files": ["decisions.json", "findings.json", "report.html"]
+  },
+
+  "labels": {
+    "_purpose": "Selection-friendly, regex-constrained ([A-Za-z0-9._-]). Applied on RGD and on every rendered CR under resources/.",
+    "required": {
+      "rekoncile.io/tf-type": "TF resource type, e.g. aws_iam_role",
+      "rekoncile.io/rgd": "RGD name owning this resource, e.g. rekoncile-demo-app-stack-adopt",
+      "rekoncile.io/mode": "adopt | create"
+    },
+    "on_rgd_only": {
+      "rekoncile.io/source-type": "always 'terraform' for this skill",
+      "rekoncile.io/source-path": "underscore-sanitized path, e.g. Terraform_examples_rekoncile-demo",
+      "rekoncile.io/tf-module": "TF module the RGD represents, e.g. vpc, eks, root"
+    }
+  },
+
+  "annotations": {
+    "_purpose": "Free-form, no regex constraints. Carry exact TF traceability info that would fail label validation.",
+    "required_on_rendered_cr": {
+      "rekoncile.io/from-tf-address": "Exact TF address including brackets, e.g. module.vpc.aws_subnet.public[0]",
+      "rekoncile.io/tf-attributes": "JSON map {ackField: 'tf.attribute.source or explanation'} for every populated field"
+    },
+    "region_annotation": {
+      "when": "regional resources only",
+      "key": "services.k8s.aws/region",
+      "value": "e.g. us-west-2"
+    }
+  },
+
+  "adopt_mode_rules": {
+    "_derived_from_ack_doc": "references/ack/adoption/adoption-patterns.md",
+    "adoption_annotations": {
+      "services.k8s.aws/adoption-policy": {
+        "values": ["adopt", "adopt-or-create"],
+        "default": "adopt",
+        "when_to_use_adopt": "Strict import — ACK reads spec from live state. Ideal spec: {}.",
+        "when_to_use_adopt_or_create": "You want the CR to double as create-if-missing. Fully populated spec required."
+      },
+      "services.k8s.aws/adoption-fields": "Lookup JSON per resource type. Keys per adoption_fields_by_kind below.",
+      "services.k8s.aws/deletion-policy": {
+        "value": "retain",
+        "mandatory": true,
+        "rationale": "Prevents accidental deletion of live AWS resource if CR is removed."
+      }
+    },
+    "spec_shape": {
+      "ideal": "spec: {} under adoption-policy: adopt",
+      "reality": "Most ACK v1.x CRDs enforce OpenAPI required-field validation even on adopt. Populate ONLY the required subset with live values. Add comment '# CRD-required minimum on adopt; ACK re-reads on adopt.'",
+      "known_openapi_required_by_kind": {
+        "iam.services.k8s.aws/Role": ["name", "assumeRolePolicyDocument"],
+        "iam.services.k8s.aws/Policy": ["name", "policyDocument"],
+        "iam.services.k8s.aws/OpenIDConnectProvider": ["url", "clientIDs"],
+        "s3.services.k8s.aws/Bucket": ["name"],
+        "rds.services.k8s.aws/DBInstance": ["dbInstanceIdentifier", "engine", "dbInstanceClass"],
+        "rds.services.k8s.aws/DBSubnetGroup": ["name", "description", "subnetIDs"],
+        "rds.services.k8s.aws/DBParameterGroup": ["name", "description", "family"],
+        "ec2.services.k8s.aws/VPC": ["cidrBlocks"],
+        "ec2.services.k8s.aws/Subnet": ["cidrBlock", "vpcID", "availabilityZone"],
+        "ec2.services.k8s.aws/InternetGateway": [],
+        "ec2.services.k8s.aws/NATGateway": [],
+        "ec2.services.k8s.aws/ElasticIPAddress": [],
+        "ec2.services.k8s.aws/RouteTable": ["vpcID"],
+        "ec2.services.k8s.aws/SecurityGroup": ["name", "description", "vpcID"],
+        "ec2.services.k8s.aws/LaunchTemplate": ["name", "data"],
+        "kms.services.k8s.aws/Key": [],
+        "kms.services.k8s.aws/Alias": ["name", "targetKeyID"],
+        "cloudwatchlogs.services.k8s.aws/LogGroup": ["name"],
+        "eks.services.k8s.aws/Cluster": ["name", "version", "roleARN", "resourcesVPCConfig"],
+        "eks.services.k8s.aws/Nodegroup": ["clusterName", "name", "nodeRole", "subnets"],
+        "eks.services.k8s.aws/AccessEntry": ["clusterName", "principalARN"],
+        "eks.services.k8s.aws/Capability": ["clusterName", "deletePropagationPolicy", "name", "type"]
+      }
+    }
+  },
+
+  "create_mode_rules": {
+    "adoption_annotations_forbidden": [
+      "services.k8s.aws/adoption-policy",
+      "services.k8s.aws/adoption-fields",
+      "services.k8s.aws/deletion-policy"
+    ],
+    "spec_shape": "Fully populated. Cross-refs inside an RGD use KRO refs (roleRef.from.name / vpcRef.from.name / targetKeyRef.from.name) not string interpolation, unless referring to status.ackResourceMetadata.arn.",
+    "parameterization": "Every value that comes from a Terraform variable becomes a schema.spec field with the TF default preserved."
+  },
+
+  "adoption_fields_by_kind": {
+    "_reference": "references/ack/adoption/adoption-patterns.md § Adoption Fields",
+    "s3.services.k8s.aws/Bucket": "{\"name\": \"<bucket>\"}",
+    "eks.services.k8s.aws/Cluster": "{\"name\": \"<cluster-name>\"}",
+    "eks.services.k8s.aws/Nodegroup": "{\"clusterName\": \"<cluster>\", \"nodegroupName\": \"<name>\"}",
+    "eks.services.k8s.aws/AccessEntry": "{\"clusterName\": \"<cluster>\", \"principalARN\": \"<arn>\"}",
+    "eks.services.k8s.aws/Capability": "{\"clusterName\": \"<cluster>\", \"name\": \"<capability-name>\"}",
+    "ec2.services.k8s.aws/VPC": "{\"vpcID\": \"vpc-...\"}",
+    "ec2.services.k8s.aws/Subnet": "{\"subnetID\": \"subnet-...\"}",
+    "ec2.services.k8s.aws/InternetGateway": "{\"internetGatewayID\": \"igw-...\"}",
+    "ec2.services.k8s.aws/NATGateway": "{\"natGatewayID\": \"nat-...\"}",
+    "ec2.services.k8s.aws/ElasticIPAddress": "{\"allocationID\": \"eipalloc-...\"}",
+    "ec2.services.k8s.aws/RouteTable": "{\"routeTableID\": \"rtb-...\"}",
+    "ec2.services.k8s.aws/SecurityGroup": "{\"id\": \"sg-...\"}",
+    "ec2.services.k8s.aws/LaunchTemplate": "{\"launchTemplateID\": \"lt-...\"}",
+    "iam.services.k8s.aws/Role": "{\"name\": \"<role-name>\"}",
+    "iam.services.k8s.aws/Policy": "{\"name\": \"<policy-name>\"} OR {\"arn\": \"arn:aws:iam::...\"}",
+    "iam.services.k8s.aws/OpenIDConnectProvider": "{\"arn\": \"arn:aws:iam::...:oidc-provider/...\"}",
+    "kms.services.k8s.aws/Key": "{\"keyID\": \"<uuid>\"}",
+    "kms.services.k8s.aws/Alias": "{\"name\": \"alias/...\"}",
+    "cloudwatchlogs.services.k8s.aws/LogGroup": "{\"name\": \"/aws/.../cluster\"}",
+    "rds.services.k8s.aws/DBInstance": "{\"dbInstanceIdentifier\": \"<id>\"}",
+    "rds.services.k8s.aws/DBSubnetGroup": "{\"name\": \"<name>\"}",
+    "rds.services.k8s.aws/DBParameterGroup": "{\"name\": \"<name>\"}"
+  },
+
+  "consolidation_rules": {
+    "_purpose": "TF resources that ACK folds into a parent CR. Do NOT emit as separate CRs.",
+    "aws_iam_role_policy_attachment": "Merged into iam/Role.spec.policies as ARN list. On adopt, ACK observes the attachment from AWS.",
+    "aws_route_table_association": "Merged into ec2/RouteTable.spec.associations (or reference the RouteTable from Subnet, controller-dependent).",
+    "aws_security_group_rule": "Merged into ec2/SecurityGroup.spec.{ingressRules,egressRules}. Standalone Rule CRDs (ec2/SecurityGroupRule) exist too — verify per-controller.",
+    "aws_vpc_security_group_ingress_rule": "Same as above.",
+    "aws_vpc_security_group_rules_exclusive": "Same as above.",
+    "aws_s3_bucket_public_access_block": "Merged into s3/Bucket.spec.publicAccessBlock.",
+    "aws_s3_bucket_server_side_encryption_configuration": "Merged into s3/Bucket.spec.serverSideEncryptionConfiguration.",
+    "aws_s3_bucket_versioning": "Merged into s3/Bucket.spec.versioning.",
+    "aws_s3_bucket_policy": "Merged into s3/Bucket.spec.policy (JSON string).",
+    "aws_ec2_tag": "Merged into target resource's spec.tags list.",
+    "aws_route": "Merged into ec2/RouteTable.spec.routes[]. Note: apigatewayv2/Route is unrelated to VPC routes."
+  },
+
+  "tf_only_pseudo_resources": [
+    "aws_default_network_acl",
+    "aws_default_route_table",
+    "aws_default_security_group",
+    "null_resource",
+    "time_sleep",
+    "aws_eks_access_policy_association"
+  ],
+
+  "grounding_loop": {
+    "_purpose": "Every Phase B subagent runs this loop before returning success.",
+    "steps": [
+      "1. Author rgd.yaml + instance.yaml + resources/*.yaml.",
+      "2. ./scripts/run validate-manifest --dir <resources> --mode <mode> --format json",
+      "3. ./scripts/run validate-cel <rgd>/rgd.yaml --format json",
+      "4. If any severity=error: re-author the offending resource, go to step 2.",
+      "5. Return success only after both validators return 0 errors OR 3 attempts have been made."
+    ],
+    "max_attempts": 3,
+    "escalation": "If attempts_needed >= 3 with unresolved errors, main skill surfaces to operator at Phase 4 checkpoint."
+  },
+
+  "capability_role_trust_policy": {
+    "_derived_from": "Terraform/examples/rekoncile-demo/addons.tf",
+    "principal": {"Service": "capabilities.eks.amazonaws.com"},
+    "actions": ["sts:AssumeRole", "sts:TagSession"],
+    "note": "EKS capability roles use a DIFFERENT trust relationship from cluster (eks.amazonaws.com) and node (ec2.amazonaws.com) roles. Every dedicated capability role must use this trust policy."
+  }
+}
