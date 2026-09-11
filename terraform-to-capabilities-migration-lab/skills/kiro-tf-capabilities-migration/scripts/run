@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Skill-side dispatcher: invokes each helper via the toolkit venv so the
+# operator never has to `source .venv/bin/activate`.
+#
+# Usage:
+#   ./scripts/run <subcommand> [args...]
+#
+# Subcommands map 1:1 to the .py files in this directory:
+#   discover, crd-inventory, validate-manifest, validate-cel,
+#   render-report, adopt
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PY="${SCRIPT_DIR}/.venv/bin/python"
+
+if [[ ! -x "${VENV_PY}" ]]; then
+  cat >&2 <<EOF
+error: Python venv not found at ${VENV_PY}
+       Run: bash ${SCRIPT_DIR}/bootstrap.sh
+EOF
+  exit 2
+fi
+
+if [[ $# -lt 1 ]]; then
+  cat >&2 <<EOF
+usage: $(basename "$0") <subcommand> [args...]
+
+Subcommands:
+  discover           Parse tfstate + HCL + live-cluster CRDs -> migrate-set.json
+  crd-inventory      List ACK CRDs installed on the target cluster
+  validate-manifest  kubectl dry-run + adoption-annotation invariants
+  validate-cel       CEL grammar check on RGD readyWhen / interpolations
+  validate-all       Parallel validate-manifest + validate-cel across all RGDs
+  render-report      Emit the single-page HTML report
+  adopt              Apply ACK CRs + poll ACK.ResourceSynced=True (TF state untouched)
+
+Run '$(basename "$0") <subcommand> --help' for per-command flags.
+EOF
+  exit 2
+fi
+
+cmd="$1"; shift
+case "${cmd}" in
+  discover|crd-inventory|validate-manifest|validate-cel|validate-all|render-report|adopt)
+    ;;
+  *)
+    echo "error: unknown subcommand '${cmd}'" >&2
+    exit 2
+    ;;
+esac
+
+# Subcommands with hyphens map to underscored filenames.
+script="${SCRIPT_DIR}/${cmd//-/_}.py"
+if [[ ! -f "${script}" ]]; then
+  echo "error: helper not found: ${script}" >&2
+  exit 2
+fi
+
+exec "${VENV_PY}" "${script}" "$@"

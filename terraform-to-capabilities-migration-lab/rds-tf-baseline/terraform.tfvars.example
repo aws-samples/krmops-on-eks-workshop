@@ -1,0 +1,5 @@
+region             = "us-west-2"
+cluster_name       = "krmops-workshop"
+workshop_id        = "attendee-01"
+vpc_id             = "vpc-0123456789abcdef0"
+private_subnet_ids = ["subnet-aaa", "subnet-bbb"]
