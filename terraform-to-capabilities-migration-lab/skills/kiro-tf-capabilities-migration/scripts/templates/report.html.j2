@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TF → ACK/KRO Migration Report</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #1f2328;
+      --muted: #59636e;
+      --border: #d1d9e0;
+      --accent: #0969da;
+      --success: #1a7f37;
+      --warning: #9a6700;
+      --error: #d1242f;
+      --panel: #f6f8fa;
+      --code-bg: #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      line-height: 1.5;
+    }
+    header.top {
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header.top h1 { margin: 0 0 .25rem 0; font-size: 1.5rem; }
+    header.top .meta { color: var(--muted); font-size: 0.875rem; }
+    nav.tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    nav.tabs button {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 0.75rem 1.25rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+      color: var(--muted);
+    }
+    nav.tabs button.active {
+      color: var(--fg);
+      border-bottom-color: var(--accent);
+    }
+    main { padding: 1.5rem 2rem; }
+    section.panel { display: none; }
+    section.panel.active { display: block; }
+    h2 { margin-top: 0; font-size: 1.15rem; }
+    h3 { font-size: 1rem; margin-top: 1.5rem; }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.85rem;
+      margin: 0.75rem 0;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.4rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { background: var(--panel); font-weight: 600; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--code-bg);
+      border-radius: 4px;
+    }
+    code { padding: 0.05rem 0.3rem; font-size: 0.85em; }
+    pre { padding: 0.75rem 1rem; overflow: auto; }
+    .badge {
+      display: inline-block;
+      padding: 0.05rem 0.5rem;
+      border-radius: 10px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .badge.confirm { background: #dafbe1; color: var(--success); }
+    .badge.correct { background: #fff8c5; color: var(--warning); }
+    .badge.proceed { background: #ddf4ff; color: var(--accent); }
+    .badge.error { background: #ffebe9; color: var(--error); }
+    .badge.warning { background: #fff8c5; color: var(--warning); }
+    .badge.info { background: #ddf4ff; color: var(--accent); }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.9rem 1.1rem;
+      margin: 0.75rem 0;
+      background: var(--panel);
+    }
+    .card h4 { margin: 0 0 0.4rem 0; font-size: 0.95rem; }
+    .card .body { font-size: 0.9rem; }
+    .attention {
+      border-left: 3px solid var(--warning);
+      padding: 0.5rem 0.75rem;
+      background: #fff8c5;
+      margin: 0.5rem 0;
+      font-size: 0.85rem;
+    }
+    #graph {
+      width: 100%;
+      height: 640px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .legend {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.8rem;
+      margin: 0.5rem 0;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
+    .legend .swatch {
+      display: inline-block;
+      width: 12px; height: 12px;
+      margin-right: 0.3rem;
+      vertical-align: middle;
+      border-radius: 2px;
+    }
+    .details {
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      padding: 0.75rem;
+      background: var(--panel);
+      border-radius: 6px;
+      min-height: 3rem;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <h1>Terraform → ACK/KRO Migration Report</h1>
+    <div class="meta">
+      Source: <code>{{ migrate_set.source.path }}</code>
+      {% if migrate_set.source.state_location %} · State: <code>{{ migrate_set.source.state_location }}</code>{% endif %}
+      · Path: <strong>{{ decisions.path|default('?')|capitalize }}</strong>
+      {% if migrate_set.cluster.context %} · Cluster: <code>{{ migrate_set.cluster.context }}</code>{% endif %}
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="decisions">Decisions</button>
+    <button class="tab-btn" data-tab="graph">Resource graph</button>
+    <button class="tab-btn" data-tab="resources">Resources</button>
+    <button class="tab-btn" data-tab="manifests">Manifests</button>
+    <button class="tab-btn" data-tab="findings">Findings</button>
+  </nav>
+
+  <main>
+    <!-- Decisions ------------------------------------------------------- -->
+    <section class="panel active" id="decisions">
+      <h2>Phase decisions</h2>
+      {% for cp in decisions.checkpoints or [] %}
+        <div class="card">
+          <h4>{{ cp.phase }}
+            {% if cp.operator_response %}
+              <span class="badge {{ cp.operator_response|lower }}">{{ cp.operator_response }}</span>
+            {% endif %}
+          </h4>
+          <div class="body">
+            {% if cp.needs_attention %}
+              {% for item in cp.needs_attention %}
+                <div class="attention">⚠ {{ item }}</div>
+              {% endfor %}
+            {% endif %}
+            <table>
+              <thead><tr><th>Decision</th><th>Detail</th></tr></thead>
+              <tbody>
+                {% for d in cp.decisions or [] %}
+                  <tr><td>{{ d.title }}</td><td>{{ d.detail }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% if cp.operator_notes %}
+              <p><strong>Operator notes:</strong> {{ cp.operator_notes }}</p>
+            {% endif %}
+          </div>
+        </div>
+      {% else %}
+        <p>No checkpoints recorded.</p>
+      {% endfor %}
+    </section>
+
+    <!-- Resource graph -------------------------------------------------- -->
+    <section class="panel" id="graph-panel">
+      <h2>Resource graph</h2>
+      <div class="legend">
+        <span><span class="swatch" style="background:#0969da"></span>KRO RGD (abstraction)</span>
+        <span><span class="swatch" style="background:#8250df"></span>ACK CR</span>
+        <span><span class="swatch" style="background:#1a7f37"></span>AWS resource (migrating)</span>
+        <span><span class="swatch" style="background:#9a6700"></span>TF-retained (Class A)</span>
+      </div>
+      <div id="graph"></div>
+      <div class="details" id="node-details">Click a node for details.</div>
+    </section>
+
+    <!-- Resources ------------------------------------------------------- -->
+    <section class="panel" id="resources">
+      <h2>Discovered resources</h2>
+      <p>{{ migrate_set.resources|length }} managed resources parsed from state
+      {% if migrate_set.cluster.ack_crds %} · {{ migrate_set.cluster.ack_crds|length }} ACK CRDs found on the target cluster{% endif %}.</p>
+
+      {% if decisions.class_a %}
+        <h3>Class A — retained in Terraform</h3>
+        <table>
+          <thead><tr><th>Address</th><th>Type</th></tr></thead>
+          <tbody>
+            {% for addr in decisions.class_a %}
+              {% set r = (migrate_set.resources | selectattr('address', 'equalto', addr) | list | first) %}
+              <tr><td><code>{{ addr }}</code></td><td>{{ r.type if r else '' }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {% if decisions.unsupported %}
+        <h3>Unsupported (no ACK controller in this cluster)</h3>
+        <table>
+          <thead><tr><th>Address</th><th>Reason</th></tr></thead>
+          <tbody>
+            {% for u in decisions.unsupported %}
+              <tr><td><code>{{ u.address }}</code></td><td>{{ u.reason }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {% if decisions.resource_groups %}
+        <h3>Resource groups</h3>
+        {% for rg in decisions.resource_groups %}
+          <div class="card">
+            <h4>{{ rg.name }}</h4>
+            <div class="body">
+              <p>{{ rg.description|default('') }}</p>
+              <ul>
+                {% for addr in rg.resources or [] %}
+                  <li><code>{{ addr }}</code></li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
+        {% endfor %}
+      {% endif %}
+    </section>
+
+    <!-- Manifests ------------------------------------------------------- -->
+    <section class="panel" id="manifests">
+      <h2>Emitted manifests</h2>
+      {% if manifests.rgds %}
+        <h3>ResourceGraphDefinitions</h3>
+        <table>
+          <thead><tr><th>Name</th><th>File</th></tr></thead>
+          <tbody>
+            {% for m in manifests.rgds %}<tr><td>{{ m.name }}</td><td><code>{{ m.file }}</code></td></tr>{% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      {% if manifests.ack_crs %}
+        <h3>ACK Custom Resources</h3>
+        <table>
+          <thead><tr><th>Kind</th><th>Name</th><th>File</th><th>Mode</th></tr></thead>
+          <tbody>
+            {% for m in manifests.ack_crs %}
+              {% set mode = 'adopt' if 'services.k8s.aws/adoption-policy' in (m.annotations or {}) else 'create' %}
+              <tr><td>{{ m.kind }}</td><td>{{ m.name }}</td><td><code>{{ m.file }}</code></td><td><span class="badge {{ 'confirm' if mode == 'adopt' else 'info' }}">{{ mode }}</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      {% if manifests.instances %}
+        <h3>Instance manifests</h3>
+        <table>
+          <thead><tr><th>Kind</th><th>Name</th><th>File</th></tr></thead>
+          <tbody>
+            {% for m in manifests.instances %}<tr><td>{{ m.kind }}</td><td>{{ m.name }}</td><td><code>{{ m.file }}</code></td></tr>{% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <!-- Findings -------------------------------------------------------- -->
+    <section class="panel" id="findings">
+      <h2>Validation findings</h2>
+      {% if findings.findings %}
+        <table>
+          <thead><tr><th>Severity</th><th>File</th><th>Kind</th><th>Message</th></tr></thead>
+          <tbody>
+            {% for f in findings.findings %}
+              <tr>
+                <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+                <td><code>{{ f.file }}</code></td>
+                <td>{{ f.kind|default('') }}{% if f.name %}/{{ f.name }}{% endif %}</td>
+                <td>{{ f.message }}{% if f.expression %} <code>{{ f.expression }}</code>{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p>No findings recorded. Run <code>validate_manifest.py</code> and <code>validate_cel.py</code> and pass <code>--findings</code> to include them here.</p>
+      {% endif %}
+    </section>
+  </main>
+
+  <script>{{ cytoscape_js | safe }}</script>
+  <script>{{ dagre_js | safe }}</script>
+  <script>{{ cytoscape_dagre_js | safe }}</script>
+  <script>
+    // Tabs
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const target = btn.dataset.tab === 'graph' ? 'graph-panel' : btn.dataset.tab;
+        document.getElementById(target).classList.add('active');
+        if (btn.dataset.tab === 'graph' && window.__cyRefit) window.__cyRefit();
+      });
+    });
+
+    const ELEMENTS = {{ elements_json | safe }};
+    const cy = cytoscape({
+      container: document.getElementById('graph'),
+      elements: ELEMENTS,
+      wheelSensitivity: 0.2,
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'label': 'data(label)',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'text-wrap': 'wrap',
+            'text-max-width': 160,
+            'font-size': 10,
+            'color': '#ffffff',
+            'text-outline-color': '#1f2328',
+            'text-outline-width': 1,
+            'width': 'label',
+            'height': 'label',
+            'padding': 8,
+            'shape': 'round-rectangle'
+          }
+        },
+        { selector: 'node[group = "rgd"]',        style: { 'background-color': '#0969da' } },
+        { selector: 'node[group = "ack"]',        style: { 'background-color': '#8250df' } },
+        { selector: 'node[group = "aws"]',        style: { 'background-color': '#1a7f37' } },
+        { selector: 'node[group = "tf_retained"]',style: { 'background-color': '#9a6700' } },
+        {
+          selector: 'edge',
+          style: {
+            'width': 1.5,
+            'line-color': '#8c959f',
+            'target-arrow-color': '#8c959f',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier'
+          }
+        },
+        { selector: 'edge[kind = "reference"]', style: { 'line-style': 'dashed', 'line-color': '#59636e' } }
+      ],
+      layout: { name: 'dagre', rankDir: 'TB', nodeSep: 40, rankSep: 60 }
+    });
+    window.__cyRefit = () => { cy.resize(); cy.fit(null, 30); };
+
+    cy.on('tap', 'node', evt => {
+      const d = evt.target.data();
+      document.getElementById('node-details').textContent = JSON.stringify(d, null, 2);
+    });
+    cy.on('tap', (evt) => {
+      if (evt.target === cy) {
+        document.getElementById('node-details').textContent = 'Click a node for details.';
+      }
+    });
+  </script>
+</body>
+</html>
