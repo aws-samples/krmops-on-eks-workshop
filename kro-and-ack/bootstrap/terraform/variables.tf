@@ -16,7 +16,7 @@ variable "name" {
 variable "cluster_version" {
   type        = string
   description = "Kubernetes Version"
-  default     = "1.32"
+  default     = "1.35"
 }
 
 variable "capacity_type" {
