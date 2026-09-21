@@ -1,5 +1,5 @@
 ---
-name: terraform-to-ack-kro-migration-skill
+name: kiro-tf-capabilities-migration
 description: >-
   Migrate Terraform-managed AWS resources to ACK/KRO via two supported capabilities:
   (1) Adopt_Path — consumes a terraform.tfstate file and generates ACK adoption CRs
