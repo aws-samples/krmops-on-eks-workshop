@@ -181,8 +181,8 @@ Each entry in `resources` represents one tracked resource or data source.
 **How to use for KRO ordering:**
 1. Filter to only `managed` resources (skip `data.*` dependencies)
 2. Build a DAG: if resource A lists resource B in dependencies, B must be created/adopted before A
-3. Resources with no managed dependencies → first in RGD (no `readyWhen` needed from others)
-4. Resources with dependencies → add `readyWhen` referencing the dependency's status
+3. Resources with no managed dependencies → first in RGD
+4. Resources with dependencies → express the ordering by interpolating the dependency's status (`${dependency.status.*}`) into a template field of the dependent resource. kro infers the edge from that CEL reference. Do NOT put the dependency in `readyWhen` — `readyWhen` may reference ONLY the resource's own `id`, and kro rejects cross-resource `readyWhen`.
 
 **Example dependency chain from real state:**
 ```

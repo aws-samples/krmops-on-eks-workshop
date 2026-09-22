@@ -272,7 +272,11 @@ Use this table as a **starting point** to map it to the ACK apiVersion, Kind, an
 
 | TF Resource Type | ACK Kind | Adoption Field | TF State Attribute for Lookup |
 |-----------------|----------|----------------|-------------------------------|
-| `aws_secretsmanager_secret` | `Secret` | `secretID` | `attributes.id` |
+| `aws_secretsmanager_secret` | `Secret` | `{"name": "<secret-name>", "id": "<secret-arn>"}` — **BOTH required** | `attributes.name` + `attributes.id` |
+
+**⚠️ Adoption note:** The secretsmanager-controller `PopulateResourceFromAnnotation` requires BOTH `name` and `id` (the full ARN including suffix, e.g. `arn:aws:secretsmanager:us-west-2:123:secret:my-secret-AbCdEf`). Using only `{"name": "..."}` produces `ACK.Terminal: required field missing: id`. Verified against `secretsmanager-controller/pkg/resource/secret/resource.go`.
+
+**⚠️ Immutability:** `spec.name` has `x-kubernetes-validations: self == oldSelf`. Post-adoption reconciliation will show `ACK.ResourceSynced: Unknown` — this is cosmetic. The ARN is correctly populated. Do NOT attempt to patch or remove spec.name.
 
 ### Route53 (route53.services.k8s.aws/v1alpha1)
 

@@ -307,6 +307,25 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 **References:** `ack/adoption/adoption-patterns.md`, `ack/adoption/examples.md`
 
+**MANDATORY before authoring any CR — read and apply these `references/authoring-contract.json` sections:**
+
+```bash
+cat references/authoring-contract.json
+```
+
+Sections that are **binding rules, not suggestions**:
+
+| Section | What it governs |
+|---|---|
+| `adoption_fields_by_kind` | Exact lookup JSON per ACK Kind — use verbatim, do not derive from mappings table alone |
+| `rgd_template_rules.spec_field_values` | All spec field values MUST come from tfstate attributes — never invent |
+| `rgd_template_rules.immutable_spec_fields` | These fields MUST use literals in RGD templates, never CEL |
+| `naming_conventions.cr_metadata_name` | CR `metadata.name` = `<migration-name>-<kind-kebab-case>` — no exceptions |
+| `naming_conventions.resource_filename` | Filename = `<kind-kebab-case>.yaml` — no exceptions |
+| `consolidation_rules` | `aws_iam_role_policy_attachment` MUST populate `spec.policies` on the Role — never skip silently |
+
+**Validation gate:** before writing any CR file, confirm adoption-fields for that Kind against `adoption_fields_by_kind`. If the Kind is absent from the section, web-verify the controller source before proceeding.
+
 For each adoptable resource, generate an ACK CR. The **`adoption-policy`** value determines whether `spec` is empty or populated — the two policies mean fundamentally different things.
 
 **Choose the adoption policy:**
@@ -372,12 +391,55 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 **References:** `kro/rgd-reference.md`, `kro/building-abstractions.md`, `kro/adoption/examples.md`
 
+**MANDATORY before authoring the RGD — apply these `references/authoring-contract.json` sections:**
+
+| Section | What it governs |
+|---|---|
+| `naming_conventions.rgd_resource_id` | RGD `id:` = Kind → camelCase (lowercase first char) — this becomes the `kro.run/node-id` label; workshop commands depend on it |
+| `naming_conventions.rgd_schema_status_field` | Status field names = `<rgd_resource_id>ARN` |
+| `naming_conventions.canonical_schema_spec_field_names` | Schema spec field names are fixed — use the canonical names to prevent KRO breaking-change errors on re-generation |
+| `rgd_template_rules.namespace` | Every resource template metadata MUST include `namespace:` — use `${schema.metadata.namespace}` |
+| `rgd_template_rules.immutable_spec_fields` | Use literals (not CEL) for immutable fields: `Secret.spec.name`, `DBInstance.spec.dbInstanceIdentifier` |
+| `rgd_template_rules.readyWhen_scope` | `readyWhen` references ONLY the resource's own `id` — never a sibling or `schema`. Ordering comes from `${sibling.status.*}` interpolation in template fields |
+
 Wrap ACK CRs into a KRO RGD for dependency management:
 - One TF module → One RGD
 - Order resources by dependency graph (no-deps first → dependents last)
-- Use `readyWhen` with `status.ackResourceMetadata.arn` to enforce ordering
+- **`readyWhen` references ONLY the resource's own `id`** (see the readyWhen rule below)
+- **Ordering between resources is expressed by interpolating a sibling's status in a template field** (`${sibling.status.ackResourceMetadata.arn}`), never in `readyWhen`
 - Schema `spec` fields = inputs needed for adoption-fields interpolation (name, region, accountId, clusterName, etc.)
 - Schema `status` fields = TF state outputs (ARNs, endpoints)
+
+**⚠️ `readyWhen` scope (MANDATORY — verified against [kro.run readiness docs](https://kro.run/docs/concepts/rgd/resource-definitions/readiness/)):**
+
+A resource's `readyWhen` may reference ONLY that same resource (by its own `id`). It MUST NOT reference another resource or `schema`. kro validates this at RGD creation and rejects cross-resource `readyWhen` with `references unknown identifiers: [<other-id>]`.
+
+Cross-resource ordering is NOT expressed in `readyWhen`. kro infers the dependency graph from CEL references in **template fields**: when resource A's template interpolates `${b.status...}`, kro creates B first, waits for B's own `readyWhen`, then creates A. (See [kro.run graph inference](https://kro.run/docs/concepts/rgd/dependencies-ordering/).)
+
+```yaml
+# ✓ CORRECT — readyWhen references only itself; ordering comes from the template interpolation
+- id: iamPolicy
+  readyWhen:
+    - ${iamPolicy.status.?ackResourceMetadata.arn.orValue("") != ""}   # own id only
+  template:
+    ...
+
+# ✗ WRONG — readyWhen references a sibling (secret). kro rejects: references unknown identifiers: [secret]
+- id: iamPolicy
+  readyWhen:
+    - ${secret.status.ackResourceMetadata.arn != ""}
+```
+
+**When a resource has no natural sibling reference in its template** (e.g. an adopted `DBInstance` or `PodIdentityAssociation` whose spec is all tfstate literals), and you still need it ordered after a sibling, create the implicit dependency by interpolating the sibling's status into a traceability annotation on that resource's template — not by touching `readyWhen`:
+
+```yaml
+- id: podIdentity
+  template:
+    metadata:
+      annotations:
+        rekoncile.io/depends-on-role: ${role.status.ackResourceMetadata.arn}   # forces ordering after role
+    ...
+```
 
 #### Phase_Checkpoint — Phase 3 (Adopt_Path)
 
@@ -536,7 +598,7 @@ metadata:
   labels:
     # Provenance — every RGD carries these:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
     rekoncile.io/mode: adopt
 spec:
   schema:
@@ -586,7 +648,7 @@ metadata:
   name: <name>
   labels:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
 spec:
   vpcID: vpc-0b49aee86cbef6647             # from module.vpc.aws_vpc.this[0].id
   appIrsaRoleName: rekoncile-demo-dev-app-irsa  # from aws_iam_role.app_irsa.name
@@ -605,7 +667,7 @@ Every emitted YAML — RGD, instance, and each child under `resources/` — MUST
 | Label | Value | Purpose |
 |---|---|---|
 | `rekoncile.io/source-type` | `terraform` | What produced this |
-| `rekoncile.io/source-path` | e.g. `Terraform/examples/rekoncile-demo` | Where in the repo |
+| `rekoncile.io/source-path` | e.g. `module-5-rds-tf-baseline` (replace every `/` with `-`) | Where in the repo |
 | `rekoncile.io/mode` | `adopt` \| `create` | Which path emitted it |
 | `rekoncile.io/tf-module` (optional) | e.g. `module.vpc` | Which TF module this RGD represents |
 
@@ -618,6 +680,8 @@ Every emitted YAML — RGD, instance, and each child under `resources/` — MUST
 | `rekoncile.io/mode` | `adopt` \| `create` | Which path emitted it |
 
 Do NOT put the raw TF address in a label. Kubernetes label values are constrained to `[A-Za-z0-9._-]` and must start/end with an alphanumeric; TF addresses contain `[`, `]`, and dot-heavy paths that fail validation. Live-cluster kubectl dry-run rejects it — verified against `rekoncile-demo`.
+
+**⚠️ `rekoncile.io/source-path` sanitization (MANDATORY):** The `Source:` input argument often contains `/` path separators (e.g. `module-5/rds-tf-baseline`). `/` is illegal in Kubernetes label values (`[A-Za-z0-9._-]` only). Before writing this label on ANY object — RGD, instance, or resource template — replace every `/` with `-`. Example: `module-5/rds-tf-baseline` → `module-5-rds-tf-baseline`. Failure produces a `kubectl apply` validation error on both the RGD and the instance.
 
 **On each rendered ACK CR under `resources/` (`metadata.annotations`):**
 
@@ -751,7 +815,7 @@ Generate an RGD that acts as a self-serve abstraction:
 - Map Terraform `output` blocks → RGD `status` fields expressed with CEL (Req 4.3)
 - Map each Terraform `resource` block → RGD resource template using the ACK Kind/apiVersion (Req 4.6)
 - Order resources by dependency graph (no-deps first → dependents last)
-- Use `readyWhen` with `status.ackResourceMetadata.arn` to enforce ordering
+- **`readyWhen` references ONLY the resource's own `id`; express ordering by interpolating a sibling's status in a template field** (never reference a sibling or `schema` in `readyWhen` — kro rejects it as `references unknown identifiers`). See the readyWhen scope rule in the Adopt_Path Phase 3 above and [kro.run readiness docs](https://kro.run/docs/concepts/rgd/resource-definitions/readiness/).
 - Link to `kro/rgd-reference.md` for schema syntax, CEL, `readyWhen`, `forEach` guidance
 
 #### Phase_Checkpoint — Phase 3 (Create_Path)
@@ -847,7 +911,7 @@ metadata:
   name: <rgd-name>-create
   labels:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
     rekoncile.io/mode: create
 spec:
   schema:
@@ -885,7 +949,7 @@ metadata:
   name: <name>
   labels:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
 spec:
   appName: greenfield
   dbInstanceClass: db.t4g.medium    # from variable "db_instance_class" default

@@ -18,7 +18,7 @@
     },
     "on_rgd_only": {
       "rekoncile.io/source-type": "always 'terraform' for this skill",
-      "rekoncile.io/source-path": "underscore-sanitized path, e.g. Terraform_examples_rekoncile-demo",
+      "rekoncile.io/source-path": "slash-sanitized path — replace every '/' with '-', e.g. module-5-rds-tf-baseline",
       "rekoncile.io/tf-module": "TF module the RGD represents, e.g. vpc, eks, root"
     }
   },
@@ -77,7 +77,9 @@
         "eks.services.k8s.aws/Cluster": ["name", "version", "roleARN", "resourcesVPCConfig"],
         "eks.services.k8s.aws/Nodegroup": ["clusterName", "name", "nodeRole", "subnets"],
         "eks.services.k8s.aws/AccessEntry": ["clusterName", "principalARN"],
-        "eks.services.k8s.aws/Capability": ["clusterName", "deletePropagationPolicy", "name", "type"]
+        "eks.services.k8s.aws/Capability": ["clusterName", "deletePropagationPolicy", "name", "type"],
+        "secretsmanager.services.k8s.aws/Secret": ["name"],
+        "eks.services.k8s.aws/PodIdentityAssociation": ["clusterName", "namespace", "serviceAccount"]
       }
     }
   },
@@ -90,6 +92,102 @@
     ],
     "spec_shape": "Fully populated. Cross-refs inside an RGD use KRO refs (roleRef.from.name / vpcRef.from.name / targetKeyRef.from.name) not string interpolation, unless referring to status.ackResourceMetadata.arn.",
     "parameterization": "Every value that comes from a Terraform variable becomes a schema.spec field with the TF default preserved."
+  },
+
+  "rgd_template_rules": {
+    "namespace": {
+      "rule": "REQUIRED in every resource template metadata block",
+      "derivation": "Use the target namespace passed as Namespace input parameter. Never omit — KRO will place the CR in the controller default namespace if missing, breaking ServiceAccount references.",
+      "example": "metadata:\n  name: ...\n  namespace: webapp-rds  # always explicit"
+    },
+    "immutable_spec_fields": {
+      "rule": "Use literal values, NEVER CEL expressions, for fields marked x-kubernetes-validations: self == oldSelf. Using CEL causes permanent FAILED state if the instance spec is ever updated.",
+      "known_immutable_fields": [
+        "secretsmanager.services.k8s.aws/Secret.spec.name",
+        "rds.services.k8s.aws/DBInstance.spec.dbInstanceIdentifier"
+      ]
+    },
+    "readyWhen_scope": {
+      "rule": "A resource's readyWhen MUST reference ONLY that same resource, by its own id. It MUST NOT reference another resource id or schema. kro validates this at RGD creation and rejects cross-resource readyWhen with 'references unknown identifiers: [<other-id>]'.",
+      "ordering": "Cross-resource ordering is NEVER expressed in readyWhen. kro infers the dependency graph from CEL references in TEMPLATE fields: when resource A's template interpolates ${b.status...}, kro creates B, waits for B's own readyWhen, then creates A.",
+      "no_natural_reference": "If a resource's template has no natural sibling reference (e.g. an adopted DBInstance or PodIdentityAssociation whose spec is all tfstate literals) but must still be ordered after a sibling, add a traceability annotation on that resource's template that interpolates the sibling status, e.g. metadata.annotations['rekoncile.io/depends-on-role']: ${role.status.ackResourceMetadata.arn}. Never move the dependency into readyWhen.",
+      "examples": {
+        "valid": "readyWhen: [\"${iamPolicy.status.?ackResourceMetadata.arn.orValue(\\\"\\\") != \\\"\\\"}\"]  # own id only",
+        "invalid": "readyWhen: [\"${secret.status.ackResourceMetadata.arn != \\\"\\\"}\"]  # references sibling 'secret' -> rejected"
+      },
+      "source": "https://kro.run/docs/concepts/rgd/resource-definitions/readiness/ and https://kro.run/docs/concepts/rgd/dependencies-ordering/"
+    },
+    "spec_field_values": {
+      "rule": "ALL spec field values MUST be extracted from terraform.tfstate attributes. Never invent plausible-sounding values (descriptions, names, ARNs). If the TF state attribute is empty, use the literal string 'Managed by Terraform' for description fields.",
+      "rationale": "ACK reconciles spec against live state. An invented value causes drift detection → ACK attempts to mutate the live AWS resource to match."
+    }
+  },
+
+  "naming_conventions": {
+    "_rationale": "All names derived algorithmically from the ACK Kind — no static per-TF-type table needed. Guarantees workshop doc commands match generated output regardless of stack.",
+    "cr_metadata_name": {
+      "pattern": "<migration-name>-<kind-kebab-case>",
+      "rule": "Kind to kebab-case: split on PascalCase word boundaries, lowercase, join with hyphens",
+      "examples": {
+        "DBInstance": "rds-webapp-adopt-db-instance",
+        "DBSubnetGroup": "rds-webapp-adopt-db-subnet-group",
+        "SecurityGroup": "rds-webapp-adopt-security-group",
+        "PodIdentityAssociation": "rds-webapp-adopt-pod-identity-association",
+        "Secret": "rds-webapp-adopt-secret",
+        "Role": "rds-webapp-adopt-role",
+        "Policy": "rds-webapp-adopt-policy"
+      }
+    },
+    "resource_filename": {
+      "pattern": "<kind-kebab-case>.yaml",
+      "examples": {
+        "DBInstance": "db-instance.yaml",
+        "DBSubnetGroup": "db-subnet-group.yaml",
+        "SecurityGroup": "security-group.yaml",
+        "PodIdentityAssociation": "pod-identity-association.yaml",
+        "Secret": "secret.yaml",
+        "Role": "role.yaml",
+        "Policy": "policy.yaml"
+      }
+    },
+    "rgd_resource_id": {
+      "pattern": "Kind → camelCase (lowercase first char only)",
+      "examples": {
+        "DBInstance": "dbInstance",
+        "DBSubnetGroup": "dbSubnetGroup",
+        "SecurityGroup": "securityGroup",
+        "PodIdentityAssociation": "podIdentityAssociation",
+        "Secret": "secret",
+        "Role": "role",
+        "Policy": "policy"
+      },
+      "note": "This value becomes kro.run/node-id label on the managed CR — workshop validation commands depend on it."
+    },
+    "rgd_schema_status_field": {
+      "pattern": "rgd_resource_id + 'ARN'",
+      "examples": {
+        "dbInstance": "dbInstanceARN",
+        "dbSubnetGroup": "dbSubnetGroupARN",
+        "securityGroup": "securityGroupARN",
+        "podIdentityAssociation": "podIdentityAssociationARN",
+        "secret": "secretARN",
+        "role": "roleARN",
+        "policy": "policyARN"
+      },
+      "note": "Used in workshop jsonpath commands: kubectl get <Kind> -o jsonpath='{.status.roleARN}'"
+    },
+    "canonical_schema_spec_field_names": {
+      "_rationale": "Fixed field names prevent KRO breaking-change errors on re-generation (rename = field removal = CRD update rejected).",
+      "aws_secretsmanager_secret.name": "smSecretName",
+      "aws_secretsmanager_secret.id": "smSecretARN",
+      "aws_security_group.id": "sgID",
+      "aws_db_subnet_group.name": "dbSubnetGroupName",
+      "aws_iam_role.name": "iamRoleName",
+      "aws_iam_policy.arn": "iamPolicyARN",
+      "aws_db_instance.identifier": "dbIdentifier",
+      "aws_eks_pod_identity_association.association_id": "podIdentityID",
+      "aws_eks_pod_identity_association.cluster_name": "clusterName"
+    }
   },
 
   "adoption_fields_by_kind": {
@@ -115,12 +213,14 @@
     "cloudwatchlogs.services.k8s.aws/LogGroup": "{\"name\": \"/aws/.../cluster\"}",
     "rds.services.k8s.aws/DBInstance": "{\"dbInstanceIdentifier\": \"<id>\"}",
     "rds.services.k8s.aws/DBSubnetGroup": "{\"name\": \"<name>\"}",
-    "rds.services.k8s.aws/DBParameterGroup": "{\"name\": \"<name>\"}"
+    "rds.services.k8s.aws/DBParameterGroup": "{\"name\": \"<name>\"}",
+    "secretsmanager.services.k8s.aws/Secret": "{\"name\": \"<secret-name>\", \"id\": \"<secret-arn>\"}",
+    "eks.services.k8s.aws/PodIdentityAssociation": "{\"associationID\": \"<id>\", \"clusterName\": \"<cluster>\"}"
   },
 
   "consolidation_rules": {
     "_purpose": "TF resources that ACK folds into a parent CR. Do NOT emit as separate CRs.",
-    "aws_iam_role_policy_attachment": "Merged into iam/Role.spec.policies as ARN list. On adopt, ACK observes the attachment from AWS.",
+    "aws_iam_role_policy_attachment": "NEVER skip silently. Extract `policy_arn` from the attachment resource and populate `spec.policies: [<policy_arn>]` on the parent Role CR. If omitted on adopt, ACK reconciles against live state, detects the policy is attached in AWS but absent from spec, and DETACHES the policy — causing immediate loss of permissions for the workload.",
     "aws_route_table_association": "Merged into ec2/RouteTable.spec.associations (or reference the RouteTable from Subnet, controller-dependent).",
     "aws_security_group_rule": "Merged into ec2/SecurityGroup.spec.{ingressRules,egressRules}. Standalone Rule CRDs (ec2/SecurityGroupRule) exist too — verify per-controller.",
     "aws_vpc_security_group_ingress_rule": "Same as above.",

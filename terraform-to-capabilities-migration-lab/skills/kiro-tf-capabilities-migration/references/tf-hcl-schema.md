@@ -195,7 +195,7 @@ HCL has **no explicit `dependencies` array** (that exists only in `tfstate`). De
 2. Each such reference is a dependency edge: the referenced resource must be created before this one.
 3. Build a DAG from these edges (same model as the `tfstate` dependency DAG, but derived from references instead of a stored array).
 4. Resources with no resource-to-resource references → first in the RGD.
-5. Resources that reference others → add `readyWhen` referencing the dependency's status.
+5. Resources that reference others → express the ordering by interpolating the dependency's status (`${dependency.status.*}`) into a template field of the dependent resource; kro infers the edge from that CEL reference. Do NOT put the dependency in `readyWhen` — `readyWhen` may reference ONLY the resource's own `id`, and kro rejects cross-resource `readyWhen`.
 6. References to `var.*` / `local.*` / `data.*` are **not** ordering edges — they bind to schema fields, resolved values, or external refs respectively.
 
 **Example dependency chain inferred from HCL references:**
