@@ -18,7 +18,7 @@
     },
     "on_rgd_only": {
       "rekoncile.io/source-type": "always 'terraform' for this skill",
-      "rekoncile.io/source-path": "underscore-sanitized path, e.g. Terraform_examples_rekoncile-demo",
+      "rekoncile.io/source-path": "slash-sanitized path — replace every '/' with '-', e.g. module-5-rds-tf-baseline",
       "rekoncile.io/tf-module": "TF module the RGD represents, e.g. vpc, eks, root"
     }
   },

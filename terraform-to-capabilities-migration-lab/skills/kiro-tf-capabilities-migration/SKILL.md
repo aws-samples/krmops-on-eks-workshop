@@ -536,7 +536,7 @@ metadata:
   labels:
     # Provenance — every RGD carries these:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
     rekoncile.io/mode: adopt
 spec:
   schema:
@@ -586,7 +586,7 @@ metadata:
   name: <name>
   labels:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
 spec:
   vpcID: vpc-0b49aee86cbef6647             # from module.vpc.aws_vpc.this[0].id
   appIrsaRoleName: rekoncile-demo-dev-app-irsa  # from aws_iam_role.app_irsa.name
@@ -605,7 +605,7 @@ Every emitted YAML — RGD, instance, and each child under `resources/` — MUST
 | Label | Value | Purpose |
 |---|---|---|
 | `rekoncile.io/source-type` | `terraform` | What produced this |
-| `rekoncile.io/source-path` | e.g. `Terraform/examples/rekoncile-demo` | Where in the repo |
+| `rekoncile.io/source-path` | e.g. `module-5-rds-tf-baseline` (replace every `/` with `-`) | Where in the repo |
 | `rekoncile.io/mode` | `adopt` \| `create` | Which path emitted it |
 | `rekoncile.io/tf-module` (optional) | e.g. `module.vpc` | Which TF module this RGD represents |
 
@@ -618,6 +618,8 @@ Every emitted YAML — RGD, instance, and each child under `resources/` — MUST
 | `rekoncile.io/mode` | `adopt` \| `create` | Which path emitted it |
 
 Do NOT put the raw TF address in a label. Kubernetes label values are constrained to `[A-Za-z0-9._-]` and must start/end with an alphanumeric; TF addresses contain `[`, `]`, and dot-heavy paths that fail validation. Live-cluster kubectl dry-run rejects it — verified against `rekoncile-demo`.
+
+**⚠️ `rekoncile.io/source-path` sanitization (MANDATORY):** The `Source:` input argument often contains `/` path separators (e.g. `module-5/rds-tf-baseline`). `/` is illegal in Kubernetes label values (`[A-Za-z0-9._-]` only). Before writing this label on ANY object — RGD, instance, or resource template — replace every `/` with `-`. Example: `module-5/rds-tf-baseline` → `module-5-rds-tf-baseline`. Failure produces a `kubectl apply` validation error on both the RGD and the instance.
 
 **On each rendered ACK CR under `resources/` (`metadata.annotations`):**
 
@@ -847,7 +849,7 @@ metadata:
   name: <rgd-name>-create
   labels:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
     rekoncile.io/mode: create
 spec:
   schema:
@@ -885,7 +887,7 @@ metadata:
   name: <name>
   labels:
     rekoncile.io/source-type: terraform
-    rekoncile.io/source-path: <relative-tf-dir>
+    rekoncile.io/source-path: <relative-tf-dir-with-slashes-replaced-by-dashes>
 spec:
   appName: greenfield
   dbInstanceClass: db.t4g.medium    # from variable "db_instance_class" default
