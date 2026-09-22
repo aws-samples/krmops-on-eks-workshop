@@ -107,6 +107,16 @@
         "rds.services.k8s.aws/DBInstance.spec.dbInstanceIdentifier"
       ]
     },
+    "readyWhen_scope": {
+      "rule": "A resource's readyWhen MUST reference ONLY that same resource, by its own id. It MUST NOT reference another resource id or schema. kro validates this at RGD creation and rejects cross-resource readyWhen with 'references unknown identifiers: [<other-id>]'.",
+      "ordering": "Cross-resource ordering is NEVER expressed in readyWhen. kro infers the dependency graph from CEL references in TEMPLATE fields: when resource A's template interpolates ${b.status...}, kro creates B, waits for B's own readyWhen, then creates A.",
+      "no_natural_reference": "If a resource's template has no natural sibling reference (e.g. an adopted DBInstance or PodIdentityAssociation whose spec is all tfstate literals) but must still be ordered after a sibling, add a traceability annotation on that resource's template that interpolates the sibling status, e.g. metadata.annotations['rekoncile.io/depends-on-role']: ${role.status.ackResourceMetadata.arn}. Never move the dependency into readyWhen.",
+      "examples": {
+        "valid": "readyWhen: [\"${iamPolicy.status.?ackResourceMetadata.arn.orValue(\\\"\\\") != \\\"\\\"}\"]  # own id only",
+        "invalid": "readyWhen: [\"${secret.status.ackResourceMetadata.arn != \\\"\\\"}\"]  # references sibling 'secret' -> rejected"
+      },
+      "source": "https://kro.run/docs/concepts/rgd/resource-definitions/readiness/ and https://kro.run/docs/concepts/rgd/dependencies-ordering/"
+    },
     "spec_field_values": {
       "rule": "ALL spec field values MUST be extracted from terraform.tfstate attributes. Never invent plausible-sounding values (descriptions, names, ARNs). If the TF state attribute is empty, use the literal string 'Managed by Terraform' for description fields.",
       "rationale": "ACK reconciles spec against live state. An invented value causes drift detection → ACK attempts to mutate the live AWS resource to match."
