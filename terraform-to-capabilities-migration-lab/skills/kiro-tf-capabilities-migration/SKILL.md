@@ -307,6 +307,25 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 **References:** `ack/adoption/adoption-patterns.md`, `ack/adoption/examples.md`
 
+**MANDATORY before authoring any CR — read and apply these `references/authoring-contract.json` sections:**
+
+```bash
+cat references/authoring-contract.json
+```
+
+Sections that are **binding rules, not suggestions**:
+
+| Section | What it governs |
+|---|---|
+| `adoption_fields_by_kind` | Exact lookup JSON per ACK Kind — use verbatim, do not derive from mappings table alone |
+| `rgd_template_rules.spec_field_values` | All spec field values MUST come from tfstate attributes — never invent |
+| `rgd_template_rules.immutable_spec_fields` | These fields MUST use literals in RGD templates, never CEL |
+| `naming_conventions.cr_metadata_name` | CR `metadata.name` = `<migration-name>-<kind-kebab-case>` — no exceptions |
+| `naming_conventions.resource_filename` | Filename = `<kind-kebab-case>.yaml` — no exceptions |
+| `consolidation_rules` | `aws_iam_role_policy_attachment` MUST populate `spec.policies` on the Role — never skip silently |
+
+**Validation gate:** before writing any CR file, confirm adoption-fields for that Kind against `adoption_fields_by_kind`. If the Kind is absent from the section, web-verify the controller source before proceeding.
+
 For each adoptable resource, generate an ACK CR. The **`adoption-policy`** value determines whether `spec` is empty or populated — the two policies mean fundamentally different things.
 
 **Choose the adoption policy:**
@@ -371,6 +390,16 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 ### Phase 3: Generate KRO ResourceGraphDefinition
 
 **References:** `kro/rgd-reference.md`, `kro/building-abstractions.md`, `kro/adoption/examples.md`
+
+**MANDATORY before authoring the RGD — apply these `references/authoring-contract.json` sections:**
+
+| Section | What it governs |
+|---|---|
+| `naming_conventions.rgd_resource_id` | RGD `id:` = Kind → camelCase (lowercase first char) — this becomes the `kro.run/node-id` label; workshop commands depend on it |
+| `naming_conventions.rgd_schema_status_field` | Status field names = `<rgd_resource_id>ARN` |
+| `naming_conventions.canonical_schema_spec_field_names` | Schema spec field names are fixed — use the canonical names to prevent KRO breaking-change errors on re-generation |
+| `rgd_template_rules.namespace` | Every resource template metadata MUST include `namespace:` — use `${schema.metadata.namespace}` |
+| `rgd_template_rules.immutable_spec_fields` | Use literals (not CEL) for immutable fields: `Secret.spec.name`, `DBInstance.spec.dbInstanceIdentifier` |
 
 Wrap ACK CRs into a KRO RGD for dependency management:
 - One TF module → One RGD
