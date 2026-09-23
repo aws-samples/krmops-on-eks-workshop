@@ -7,7 +7,7 @@
 #
 # Subcommands map 1:1 to the .py files in this directory:
 #   discover, crd-inventory, validate-manifest, validate-cel,
-#   render-report, adopt
+#   validate-spec-fields, validate-all, render-report, adopt
 
 set -euo pipefail
 
@@ -31,7 +31,8 @@ Subcommands:
   crd-inventory      List ACK CRDs installed on the target cluster
   validate-manifest  kubectl dry-run + adoption-annotation invariants
   validate-cel       CEL grammar check on RGD readyWhen / interpolations
-  validate-all       Parallel validate-manifest + validate-cel across all RGDs
+  validate-spec-fields  Check every spec field in generated CRs/RGD templates exists in the live CRD
+  validate-all       Parallel validate-spec-fields + validate-manifest + validate-cel across all RGDs
   render-report      Emit the single-page HTML report
   adopt              Apply ACK CRs + poll ACK.ResourceSynced=True (TF state untouched)
 
@@ -42,7 +43,7 @@ fi
 
 cmd="$1"; shift
 case "${cmd}" in
-  discover|crd-inventory|validate-manifest|validate-cel|validate-all|render-report|adopt)
+  discover|crd-inventory|validate-manifest|validate-cel|validate-spec-fields|validate-all|render-report|adopt)
     ;;
   *)
     echo "error: unknown subcommand '${cmd}'" >&2

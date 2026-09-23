@@ -93,7 +93,8 @@ That single command creates `scripts/.venv/`, installs Python dependencies, and 
 | `scripts/run crd-inventory` | Standalone CRD listing (called by discover, or ad-hoc if the cluster changed) | Phase 1; Phase 4 pre-validate if needed |
 | `scripts/run validate-manifest` | `kubectl apply --dry-run=server` per manifest + adoption-annotation invariants | Phase 4 (both paths) |
 | `scripts/run validate-cel` | CEL grammar check on `readyWhen` and `${…}` interpolations in RGDs | Phase 4 (both paths) |
-| `scripts/run validate-all` | Parallel validate-manifest + validate-cel across every `<mode>/<rgd>/` subtree; aggregates per-mode findings.json for render-report | Phase 4 (preferred over serial invocations — ~2.3× speedup measured) |
+| `scripts/run validate-spec-fields` | Every spec field in the generated CRs **and** the ACK templates inside `rgd.yaml` must exist in the live CRD — catches fields that exist in the AWS SDK/Terraform but not the CRD (e.g. `skipFinalSnapshot`, `applyImmediately`). `--dry-run=server` cannot catch these: the API server silently **prunes** unknown fields | Phase 4 (both paths); also inline right after writing each CR in Phase 2 |
+| `scripts/run validate-all` | Parallel validate-spec-fields + validate-manifest + validate-cel across every `<mode>/<rgd>/` subtree; aggregates per-mode findings.json for render-report | Phase 4 (preferred over serial invocations — ~2.3× speedup measured) |
 | `scripts/run render-report` | Single-page HTML combining Phase_Checkpoint decisions + Cytoscape resource graph + migration report | Phase 4 (both paths) |
 | `scripts/run adopt` | Apply ACK CRs + poll `ACK.ResourceSynced=True` (verify adoption; **never** touches TF state) | Post-Phase 4, Adopt_Path only, opt-in |
 
@@ -130,7 +131,7 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
 **Each subagent's job (per RGD, per mode):**
 - Receive: the verified mapping table (from Phase A), the list of resource addresses in this group, the resolved TF attributes for each, and the mode (adopt or create).
 - Author `<rgd-name>/rgd.yaml` + `<rgd-name>/instance.yaml` + `<rgd-name>/resources/*.yaml`.
-- Run its own tight grounding loop: `./scripts/run validate-manifest --dir <rgd>/resources --mode <mode>` + `./scripts/run validate-cel <rgd>/rgd.yaml`. Fix findings and re-run until clean or 3 attempts.
+- Run its own tight grounding loop: `./scripts/run validate-spec-fields <rgd>/` + `./scripts/run validate-manifest --dir <rgd>/resources --mode <mode>` + `./scripts/run validate-cel <rgd>/rgd.yaml`. Fix findings and re-run until clean or 3 attempts.
 - Return `{rgd_name, files_written: [...], findings_summary: {errors, warnings}, attempts_needed: int}`.
 
 **Skill obligations:**
@@ -144,9 +145,10 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
 **Fan-out unit:** `(mode, rgd)` tuple — 6 tuples for a 3-RGD × 2-mode run.
 
 **Each subagent's job (or delegate the whole sweep to the built-in helper):**
+- Run `./scripts/run validate-spec-fields <path>/ --context $CTX --format json`.
 - Run `./scripts/run validate-manifest --dir <path> --context $CTX --mode <mode> --format json`.
 - Run `./scripts/run validate-cel <path>/rgd.yaml --format json`.
-- Return `{mode, rgd, manifest_findings: [...], cel_findings: [...], duration_seconds}`.
+- Return `{mode, rgd, spec_findings: [...], manifest_findings: [...], cel_findings: [...], duration_seconds}`.
 
 **Preferred invocation — one command does the fan-out for you:**
 
@@ -157,7 +159,7 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
   --workers 8
 ```
 
-`validate-all` auto-discovers every `<mode>/<rgd>/` subtree and runs validate-manifest + validate-cel across all `(mode, rgd)` tuples concurrently via a thread pool. Aggregates findings into `<mode>/findings.json` ready for `render-report`. Exit code non-zero iff any tuple has a `severity: error` finding. **Use this instead of orchestrating separate subagents unless you specifically want per-RGD subagent conversation state.**
+`validate-all` auto-discovers every `<mode>/<rgd>/` subtree and runs validate-spec-fields + validate-manifest + validate-cel across all `(mode, rgd)` tuples concurrently via a thread pool. Aggregates findings into `<mode>/findings.json` ready for `render-report`. Exit code non-zero iff any tuple has a `severity: error` finding. **Use this instead of orchestrating separate subagents unless you specifically want per-RGD subagent conversation state.**
 
 Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s parallel). Projected on 3-RGD × 2-mode (6 tuples): ~4-5× speedup, bounded by the slowest tuple.
 
@@ -323,8 +325,9 @@ Sections that are **binding rules, not suggestions**:
 | `naming_conventions.cr_metadata_name` | CR `metadata.name` = `<migration-name>-<kind-kebab-case>` — no exceptions |
 | `naming_conventions.resource_filename` | Filename = `<kind-kebab-case>.yaml` — no exceptions |
 | `consolidation_rules` | `aws_iam_role_policy_attachment` MUST populate `spec.policies` on the Role — never skip silently |
+| `pre_write_crd_field_check` | Every spec field MUST exist in the live CRD — enumerate it, don't infer from AWS docs (unknown fields are silently pruned) |
 
-**Validation gate:** before writing any CR file, confirm adoption-fields for that Kind against `adoption_fields_by_kind`. If the Kind is absent from the section, web-verify the controller source before proceeding.
+**Validation gate:** before writing any CR file, confirm adoption-fields for that Kind against `adoption_fields_by_kind`. If the Kind is absent from the section, web-verify the controller source before proceeding. Then run `./scripts/run validate-spec-fields <resources-dir>` to confirm every spec field exists in the live CRD.
 
 For each adoptable resource, generate an ACK CR. The **`adoption-policy`** value determines whether `spec` is empty or populated — the two policies mean fundamentally different things.
 
@@ -475,6 +478,10 @@ Generate:
 After writing every YAML to `<output-dir>/`, run:
 
 ```bash
+./scripts/run validate-spec-fields <output-dir>/ \
+  --kubeconfig $KUBECONFIG \
+  --format json > /tmp/spec-fields-findings.json
+
 ./scripts/run validate-manifest \
   --dir <output-dir>/ \
   --kubeconfig $KUBECONFIG \
@@ -490,7 +497,7 @@ After writing every YAML to `<output-dir>/`, run:
 
 **Report rendering (MANDATORY once validation is clean):**
 
-Merge `/tmp/manifest-findings.json` and `/tmp/cel-findings.json` into a single `/tmp/findings.json` (concatenate the `findings` arrays), then write the operator report:
+Merge `/tmp/spec-fields-findings.json`, `/tmp/manifest-findings.json` and `/tmp/cel-findings.json` into a single `/tmp/findings.json` (concatenate the `findings` arrays), then write the operator report:
 
 ```bash
 ./scripts/run render-report \
@@ -775,7 +782,28 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 **References:** `ack/creation/creation-patterns.md`, `ack/creation/examples.md`
 
+**⚠️ MANDATORY before writing any spec field — enumerate the LIVE CRD fields:**
+
+```bash
+kubectl get crd <plural>.<group> \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(sorted(d.keys()))"
+```
+
+Every spec field you write MUST appear in this output. AWS SDK/API parameters and Terraform lifecycle arguments are **not** the same set as ACK CRD spec fields, so reading the AWS service docs is not evidence that a field exists. If a TF attribute has no matching CRD field, **omit it** and record it in MIGRATION-NOTES.md under "Unsupported TF attributes".
+
+Why this is a hard gate: unknown fields in a CR are **silently pruned** by the API server, so `kubectl apply --dry-run=server` will not flag them (the value is just lost); inside an RGD template kro fails the type check with `schema not found for field <name>`. See `references/authoring-contract.json` → `pre_write_crd_field_check` for the rule and a (non-authoritative) snapshot of known gaps — the live enumeration above always wins.
+
+**⚠️ MANDATORY — write each CR file to disk immediately after authoring it:**
+
+Do NOT accumulate CR content in memory and write everything at Phase 4. Write each `resources/<kind-kebab-case>.yaml` as soon as its content is final, then optionally gate it right away:
+
+```bash
+./scripts/run validate-spec-fields <output-dir>/create/<rgd-name>/resources/
+```
+
 For each resource with an ACK equivalent, generate a full-spec ACK CR:
+- **Write `resources/<kind-kebab-case>.yaml` to disk immediately after authoring each CR**
 - **🌐 Web-verify the CRD field schema before generating** — fetch the ACK API reference or CRD YAML to confirm exact field names, required fields, and nesting structure (see [Mandatory Web Verification](#mandatory-web-verification-all-phases)). Do NOT guess field names from Terraform attribute names.
 - Populate the full resource spec from Terraform variables (Req 4.4)
 - Do NOT include any ACK adoption annotations (`adoption-policy`, `adoption-fields`, `deletion-policy`)
@@ -808,6 +836,8 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 ### Phase 3: Generate Self-Serve KRO ResourceGraphDefinition
 
 **References:** `kro/rgd-reference.md`, `kro/building-abstractions.md`, `kro/creation/hcl-to-rgd.md`, `kro/creation/examples.md`
+
+**⚠️ MANDATORY — write `rgd.yaml` to disk immediately after the RGD spec is complete. Do NOT defer the write to Phase 4.**
 
 Generate an RGD that acts as a self-serve abstraction:
 - One TF module → One RGD
@@ -854,6 +884,10 @@ Generate:
 After writing every YAML to `<output-dir>/`, run:
 
 ```bash
+./scripts/run validate-spec-fields <output-dir>/ \
+  --kubeconfig $KUBECONFIG \
+  --format json > /tmp/spec-fields-findings.json
+
 ./scripts/run validate-manifest \
   --dir <output-dir>/ \
   --kubeconfig $KUBECONFIG \
