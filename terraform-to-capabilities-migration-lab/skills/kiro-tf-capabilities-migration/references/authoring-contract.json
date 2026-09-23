@@ -102,10 +102,32 @@
     },
     "immutable_spec_fields": {
       "rule": "Use literal values, NEVER CEL expressions, for fields marked x-kubernetes-validations: self == oldSelf. Using CEL causes permanent FAILED state if the instance spec is ever updated.",
+      "enforcement": "Do not trust the list below — it is a non-exhaustive snapshot. Before writing any spec field that looks like a name or identifier, enumerate the immutable fields from the live CRD: kubectl get crd <plural>.<group> -o json | python3 -c \"import sys,json; c=json.load(sys.stdin); p=c['spec']['versions'][0]['schema']['openAPIV3Schema']['properties']['spec']['properties']; [print(k) for k in p if p[k].get('x-kubernetes-validations')]\"",
       "known_immutable_fields": [
         "secretsmanager.services.k8s.aws/Secret.spec.name",
-        "rds.services.k8s.aws/DBInstance.spec.dbInstanceIdentifier"
-      ]
+        "rds.services.k8s.aws/DBInstance.spec.dbInstanceIdentifier",
+        "rds.services.k8s.aws/DBInstance.spec.availabilityZone"
+      ],
+      "_known_immutable_fields_note": "Snapshot only, verified 2026-09 against controller main. The RDS DBInstance CRD marks several more fields immutable; always run the enforcement command instead of relying on this list."
+    },
+    "pre_write_crd_field_check": {
+      "rule": "Before writing any spec field in a CR template, verify the field exists in the LIVE CRD. If it is absent, do NOT include it — record the omission in MIGRATION-NOTES.md under 'Unsupported TF attributes'.",
+      "rationale": "AWS SDK/API parameters and Terraform lifecycle arguments are not the same set as ACK CRD spec fields. Reading the AWS service docs is NOT sufficient evidence that a field exists in the CRD. Unknown fields in a CR are silently pruned by the API server (structural schema pruning), so kubectl apply --dry-run=server will NOT flag them; in an RGD template kro fails the type check with 'schema not found for field <name>'.",
+      "command": "kubectl get crd <plural>.<group> -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' | python3 -c \"import sys,json; d=json.load(sys.stdin); print(sorted(d.keys()))\"",
+      "command_note": "versions[0] is correct for ACK CRDs, which currently ship a single v1alpha1 version. If a CRD ever serves multiple versions, select the one with storage: true instead.",
+      "automated_gate": "scripts/run validate-spec-fields <resources-dir> — checks every spec key in generated CRs against the live CRD and exits non-zero on unknown fields.",
+      "known_absent_fields": {
+        "_note": "Non-authoritative snapshot (verified 2026-09 against each controller's main branch). The live enumeration above always wins. Controllers add fields over time — never omit a field solely because it appears here without re-checking.",
+        "secretsmanager.services.k8s.aws/Secret": {
+          "absent": ["forceDeleteWithoutRecovery"],
+          "present_but_often_assumed_absent": ["recoveryWindowInDays"],
+          "note": "forceDeleteWithoutRecovery is not a CRD spec field. recoveryWindowInDays IS a valid CRD field (format: int64) and maps TF recovery_window_in_days; ACK accepts 0 to request immediate deletion (mapped to the DeleteSecret ForceDeleteWithoutRecovery parameter). Do NOT drop recoveryWindowInDays."
+        },
+        "rds.services.k8s.aws/DBInstance": {
+          "absent": ["skipFinalSnapshot", "finalSnapshotIdentifier", "applyImmediately"],
+          "note": "skipFinalSnapshot and finalSnapshotIdentifier are Terraform deletion-lifecycle arguments with no ACK CRD field. applyImmediately is an AWS API request parameter not exposed in the CRD spec. Omit all three and record them as unsupported TF attributes."
+        }
+      }
     },
     "readyWhen_scope": {
       "rule": "A resource's readyWhen MUST reference ONLY that same resource, by its own id. It MUST NOT reference another resource id or schema. kro validates this at RGD creation and rejects cross-resource readyWhen with 'references unknown identifiers: [<other-id>]'.",

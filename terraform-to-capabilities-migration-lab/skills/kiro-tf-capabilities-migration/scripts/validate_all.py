@@ -45,6 +45,7 @@ class TupleResult:
     rgd: str
     manifest_findings: list
     cel_findings: list
+    spec_findings: list
     duration_seconds: float
     ok: bool
     error: str = ""
@@ -96,19 +97,30 @@ def validate_tuple(mode: str, rgd: str, output_dir: Path, context: str | None, k
     cel_args = [RUN, "validate-cel", str(rgd_file), "--format", "json"]
     cel_findings, crc = _run_json(cel_args)
 
+    # Spec-field existence: run over the whole <mode>/<rgd>/ subtree so it covers
+    # both resources/*.yaml and the ACK templates nested in rgd.yaml.
+    spec_args = [RUN, "validate-spec-fields", str(output_dir / mode / rgd), "--format", "json"]
+    if context:
+        spec_args += ["--context", context]
+    if kubeconfig:
+        spec_args += ["--kubeconfig", kubeconfig]
+
+    spec_findings, src = _run_json(spec_args)
+
     error = ""
     ok = True
-    # non-zero rc from validate-manifest is expected when there are severity=error
-    # findings; not a wrapper failure. Same for validate-cel.
-    if mrc not in (0, 1) or crc not in (0, 1):
+    # non-zero rc from a validator is expected when there are severity=error
+    # findings; only an unexpected rc means the wrapper itself failed.
+    if mrc not in (0, 1) or crc not in (0, 1) or src not in (0, 1):
         ok = False
-        error = f"validator rc mrc={mrc} crc={crc}"
+        error = f"validator rc mrc={mrc} crc={crc} src={src}"
 
     return TupleResult(
         mode=mode,
         rgd=rgd,
         manifest_findings=manifest_findings,
         cel_findings=cel_findings,
+        spec_findings=spec_findings,
         duration_seconds=round(time.time() - start, 2),
         ok=ok,
         error=error,
@@ -156,19 +168,28 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
     # Aggregate findings per mode; write mode-level findings.json for render-report.
     per_mode: dict[str, list] = {m: [] for m in modes}
     per_mode_cel: dict[str, list] = {m: [] for m in modes}
+    per_mode_spec: dict[str, list] = {m: [] for m in modes}
     for r in results:
         per_mode.setdefault(r.mode, []).extend(r.manifest_findings)
         per_mode_cel.setdefault(r.mode, []).extend(r.cel_findings)
+        per_mode_spec.setdefault(r.mode, []).extend(r.spec_findings)
 
     for mode in modes:
-        combined = per_mode.get(mode, []) + per_mode_cel.get(mode, [])
+        combined = (
+            per_mode.get(mode, [])
+            + per_mode_cel.get(mode, [])
+            + per_mode_spec.get(mode, [])
+        )
         target = output_dir / mode / "findings.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps({"findings": combined}, indent=2))
 
     # Any error-severity finding = overall non-zero exit.
     any_errors = any(
-        any(f.get("severity") == "error" for f in r.manifest_findings + r.cel_findings)
+        any(
+            f.get("severity") == "error"
+            for f in r.manifest_findings + r.cel_findings + r.spec_findings
+        )
         for r in results
     )
 
@@ -184,8 +205,9 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
             m_err = sum(1 for f in r.manifest_findings if f.get("severity") == "error")
             m_warn = sum(1 for f in r.manifest_findings if f.get("severity") == "warning")
             c_err = sum(1 for f in r.cel_findings if f.get("severity") == "error")
-            marker = "✓" if (m_err == 0 and c_err == 0) else "✗"
-            click.echo(f"  {marker} {r.mode}/{r.rgd:20s} manifest_err={m_err} warn={m_warn} cel_err={c_err} {r.duration_seconds:.2f}s")
+            s_err = sum(1 for f in r.spec_findings if f.get("severity") == "error")
+            marker = "✓" if (m_err == 0 and c_err == 0 and s_err == 0) else "✗"
+            click.echo(f"  {marker} {r.mode}/{r.rgd:20s} manifest_err={m_err} warn={m_warn} cel_err={c_err} spec_err={s_err} {r.duration_seconds:.2f}s")
         click.echo(f"total wall-clock: {total_elapsed}s   ({len(tuples)} tuples, {workers} workers)")
 
     if any_errors:

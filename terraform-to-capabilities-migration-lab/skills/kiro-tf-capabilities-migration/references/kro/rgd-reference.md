@@ -297,6 +297,76 @@ status:
 Without `?`, the RGD blocks reconciliation until the field appears, which can stall an
 instance indefinitely. Caveat: `?` prevents build-time validation of field existence.
 
+#### Where to use `?` — and where NOT to (MANDATORY)
+
+`?` is **context-dependent**. The official guidance is to use it **sparingly** (it disables
+kro's build-time field validation), and kro already **waits** for fields that will
+eventually exist rather than failing on them.
+
+| Context | Use | Why |
+|---|---|---|
+| RGD `status:` block | **`?` + `.orValue(...)`** | The instance status must render even before children are ready; without a default it stalls. |
+| `readyWhen` | **`?` + `.orValue(...)`** | Must return a boolean safely on the first reconcile (own resource only). |
+| **Template field referencing a sibling** (e.g. an ARN used in a policy document) | **bare reference — NO `?`** | The bare reference is what creates the dependency edge, and kro **waits** until it resolves before creating this resource. Adding `?…orValue("")` makes it instantly resolvable, so kro does **not** wait and can inject an empty value. |
+| Schema-less data (ConfigMap/Secret keys, unknown structure) | **`?` + `.orValue(...)`** | The key may genuinely never exist. |
+
+```yaml
+# ✅ Template field: bare reference — creates the dependency, kro waits for the real ARN
+policyDocument: |
+  {
+    "Resource": "${secret.status.ackResourceMetadata.arn}"
+  }
+
+# ❌ Template field with ?/orValue: resolves immediately to "" — kro does NOT wait,
+#    and an empty Resource silently lands in the live policy
+policyDocument: |
+  {
+    "Resource": "${secret.status.?ackResourceMetadata.arn.orValue("")}"
+  }
+```
+
+> A bare sibling reference does **not** nil-dereference. Per
+> [kro graph inference](https://kro.run/docs/concepts/rgd/dependencies-ordering/), kro waits for
+> every dependency expression to be resolvable before creating the resource; and per
+> [kro readiness](https://kro.run/docs/concepts/rgd/resource-definitions/readiness/), "for fields
+> that will eventually exist, kro simply waits for them to become available."
+
+#### `orValue` type contract (MANDATORY)
+
+The `orValue()` argument **must match the type of the optional field**. kro type-checks CEL
+against the OpenAPI schema at RGD creation, so a mismatch fails the RGD with
+`found no matching overload for 'orValue' applied to 'optional_type(int).(string)'`.
+
+| Field type | Correct `orValue` argument | To surface as string |
+|---|---|---|
+| `string` | `.orValue("")` | — |
+| `int` / `int64` | `.orValue(0)` | `string(field.orValue(0))` |
+| `bool` | `.orValue(false)` | — |
+| `[]string` | `.orValue([])` | — |
+
+```yaml
+# ✅ integer status field exposed as a string in the RGD status block
+dbPort: "${string(dbInstance.status.?endpoint.?port.orValue(0))}"
+
+# ❌ type error — orValue arg (string) doesn't match optional_type(int)
+dbPort: "${dbInstance.status.?endpoint.?port.orValue(\"\")}"
+```
+
+**How to know the type:** read it from the CRD — any field with `format: int64` needs
+`.orValue(0)`, not `.orValue("")`:
+
+```bash
+kubectl get crd <plural>.<group> -o json \
+  | python3 -c "import sys,json; c=json.load(sys.stdin); print(json.dumps(c['spec']['versions'][0]['schema']['openAPIV3Schema']['properties']['status'],indent=2))"
+```
+
+Verified example: `rds.services.k8s.aws/DBInstance` exposes `status.endpoint.port` as
+`format: int64` → `.orValue(0)`. Do not assume a status field is a string because it renders
+like one.
+
+Note that string templates additionally require every embedded expression to return a string,
+so integers must be wrapped in `string(...)` regardless of `orValue`.
+
 ### Common CEL functions
 
 | Function            | Purpose                                                         |
@@ -881,6 +951,55 @@ kind: Bucket
 apiVersion: s3.services.k8s.aws/v1alpha1
 ```
 
+### Rule 6 (CRITICAL): CEL inside block scalars — use bare `"`, NEVER `\"`
+
+Inside a `|` block scalar **backslash is a literal character** — YAML does no escape
+processing there (only double-quoted scalars do). So `\"` reaches kro as two characters
+(backslash + quote) and the CEL parser rejects it with
+`token recognition error at: '\'`.
+
+**This is the inverse of Rule 2.** The same `orValue("")` pattern is quoted differently
+depending on the surrounding YAML context:
+
+```yaml
+# ✅ CORRECT — CEL in a YAML double-quoted string: escape inner "
+readyWhen:
+  - "${secret.status.?ackResourceMetadata.arn.orValue(\"\") != \"\"}"
+
+# ✅ CORRECT — CEL inside a block scalar: bare " (no backslash)
+policyDocument: |
+  {
+    "Resource": "${secret.status.ackResourceMetadata.arn}"
+  }
+
+# ❌ WRONG — backslash inside a block scalar causes a CEL parse error
+policyDocument: |
+  {
+    "Resource": "${secret.status.?ackResourceMetadata.arn.orValue(\"\")}"
+  }
+```
+
+**Rule: inside a `|` block scalar every `"` is bare. Inside a double-quoted YAML string
+every inner `"` is `\"`.**
+
+#### Block scalars for standalone expressions need the chomp indicator
+
+`|` and `>` append a trailing newline. For fields that must be **exactly** one expression
+(`readyWhen`, `includeWhen`), that trailing newline means the value is no longer exactly
+`${...}` and validation fails. Use `|-` (or `>-`) to strip it:
+
+```yaml
+# ✅ multiline standalone expression — note the chomp indicator
+includeWhen:
+  - |-
+    ${
+      schema.spec.enabled &&
+      schema.spec.count > 0
+    }
+```
+
+> Reference: https://kro.run/docs/concepts/rgd/cel-expressions/ (Multiline Expressions and YAML Block Scalars)
+
 ### Quick Reference Table
 
 | Content type | Needs quoting? | Example |
@@ -890,6 +1009,8 @@ apiVersion: s3.services.k8s.aws/v1alpha1
 | CEL with inner quotes | ✅ + escape inner `"` | `"${...orValue(\"\")}"` |
 | CEL building JSON strings | ✅ + double-escape | `"${\"{\\\"key\\\": ...\"}"` |
 | Block scalar multiline | ❌ No (use `\|`) | `policyDocument: \|` |
+| **CEL *inside* a block scalar** | ❌ No — **bare `"`, never `\"`** (Rule 6) | `"Resource": "${secret.status.ackResourceMetadata.arn}"` |
+| **Standalone expr. in a block scalar** | Use `\|-` / `>-` to chomp the newline | `readyWhen:` `- \|-` |
 | Plain strings | ❌ No | `adopt`, `retain` |
 | Annotations with colons | ❌ No (YAML handles) | `services.k8s.aws/region: eu-west-1` |
 
