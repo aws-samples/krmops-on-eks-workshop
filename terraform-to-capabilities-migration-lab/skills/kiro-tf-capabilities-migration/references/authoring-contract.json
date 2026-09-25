@@ -100,6 +100,13 @@
       "derivation": "Use the target namespace passed as Namespace input parameter. Never omit — KRO will place the CR in the controller default namespace if missing, breaking ServiceAccount references.",
       "example": "metadata:\n  name: ...\n  namespace: webapp-rds  # always explicit"
     },
+    "template_top_level_keys": {
+      "rule": "A resource template's top-level keys MUST be exactly apiVersion, kind, metadata, spec (plus data/stringData/type for native ConfigMap/Secret, rules for RBAC). annotations and labels MUST be nested under metadata, never peers of it.",
+      "why": "resources[].template is x-kubernetes-preserve-unknown-fields: true, so the API server accepts a mis-indented key and kubectl apply --dry-run=server passes. The failure surfaces only at RGD reconciliation as 'error getting field schema for path .<key>: schema not found for field <key>', with the RGD wedged GraphAccepted=False.",
+      "correct": "template:\n  apiVersion: ec2.services.k8s.aws/v1alpha1\n  kind: SecurityGroup\n  metadata:\n    name: x\n    namespace: ${schema.metadata.namespace}\n    labels: {...}\n    annotations:\n      services.k8s.aws/adoption-policy: adopt\n  spec: {...}",
+      "incorrect": "template:\n  metadata:\n    name: x\n  annotations:        # <-- peer of metadata; kro rejects the RGD",
+      "automated_gate": "scripts/run validate-spec-fields <rgd.yaml> — flags any top-level template key outside the allowed set for that Kind, regardless of its value type. A mis-indented annotations/labels block is flagged even though its value is an object."
+    },
     "immutable_spec_fields": {
       "rule": "Use literal values, NEVER CEL expressions, for fields marked x-kubernetes-validations: self == oldSelf. Using CEL causes permanent FAILED state if the instance spec is ever updated.",
       "enforcement": "Do not trust the list below — it is a non-exhaustive snapshot. Before writing any spec field that looks like a name or identifier, enumerate the immutable fields from the live CRD: kubectl get crd <plural>.<group> -o json | python3 -c \"import sys,json; c=json.load(sys.stdin); p=c['spec']['versions'][0]['schema']['openAPIV3Schema']['properties']['spec']['properties']; [print(k) for k in p if p[k].get('x-kubernetes-validations')]\"",
@@ -138,6 +145,13 @@
         "invalid": "readyWhen: [\"${secret.status.ackResourceMetadata.arn != \\\"\\\"}\"]  # references sibling 'secret' -> rejected"
       },
       "source": "https://kro.run/docs/concepts/rgd/resource-definitions/readiness/ and https://kro.run/docs/concepts/rgd/dependencies-ordering/"
+    },
+    "adoption_fields_templating": {
+      "rule": "CEL interpolation inside services.k8s.aws/adoption-fields IS SUPPORTED and is the intended pattern for an adopt-mode RGD. Example: services.k8s.aws/adoption-fields: '{\"vpcID\":\"${schema.spec.vpcID}\"}'",
+      "why": "Parameterizing the lookup on schema.spec is what makes one adopt RGD reusable across accounts and regions — only instance.yaml changes. Do NOT 'fix' a templated adoption-fields value by replacing it with a literal.",
+      "constraint": "Reference only ${schema.spec.*} / ${schema.metadata.*} in adoption-fields. Do not reference a sibling resource's status: the lookup must resolve before the resource is created, so a status reference cannot be satisfied.",
+      "note": "The result after CEL evaluation must still be valid JSON. Keep the surrounding quoting intact.",
+      "misdiagnosis_warning": "An RGD error naming .annotations ('schema not found for field annotations') is NOT caused by CEL in adoption-fields. It means the annotations block is mis-indented as a peer of metadata — see template_top_level_keys."
     },
     "spec_field_values": {
       "rule": "ALL spec field values MUST be extracted from terraform.tfstate attributes. Never invent plausible-sounding values (descriptions, names, ARNs). If the TF state attribute is empty, use the literal string 'Managed by Terraform' for description fields.",

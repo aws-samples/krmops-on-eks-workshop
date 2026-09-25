@@ -402,8 +402,10 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 | `naming_conventions.rgd_schema_status_field` | Status field names = `<rgd_resource_id>ARN` |
 | `naming_conventions.canonical_schema_spec_field_names` | Schema spec field names are fixed — use the canonical names to prevent KRO breaking-change errors on re-generation |
 | `rgd_template_rules.namespace` | Every resource template metadata MUST include `namespace:` — use `${schema.metadata.namespace}` |
+| `rgd_template_rules.template_top_level_keys` | A template's top-level keys are ONLY `apiVersion`, `kind`, `metadata`, `spec` (+ `data`/`stringData`/`type` for native ConfigMap/Secret, `rules` for RBAC). `annotations`/`labels` nest under `metadata` — a peer-of-`metadata` block passes dry-run and then wedges the RGD at reconciliation |
 | `rgd_template_rules.immutable_spec_fields` | Use literals (not CEL) for immutable fields: `Secret.spec.name`, `DBInstance.spec.dbInstanceIdentifier` |
 | `rgd_template_rules.readyWhen_scope` | `readyWhen` references ONLY the resource's own `id` — never a sibling or `schema`. Ordering comes from `${sibling.status.*}` interpolation in template fields |
+| `rgd_template_rules.adoption_fields_templating` | CEL inside `services.k8s.aws/adoption-fields` is SUPPORTED and intended — parameterize the lookup on `${schema.spec.*}`, never "fix" it to a literal. No sibling `status` references (the lookup resolves before creation) |
 
 Wrap ACK CRs into a KRO RGD for dependency management:
 - One TF module → One RGD
@@ -494,6 +496,22 @@ After writing every YAML to `<output-dir>/`, run:
 `validate-manifest` runs `kubectl apply --dry-run=server` for every file (real CRD schema check against the target cluster) AND enforces adoption-annotation invariants (adopt CRs MUST carry `services.k8s.aws/adoption-policy` and `services.k8s.aws/deletion-policy: retain`; the check only applies to ACK CRs — RGDs and native objects are skipped). Every `severity: error` finding MUST be fixed before the Phase_Checkpoint; treat them as feedback for another authoring pass, then re-run validation. Do NOT proceed with unresolved errors — the previous CLI's retry-with-feedback loop is replaced by this explicit skill-driven cycle.
 
 `validate-cel` catches CEL grammar errors in `readyWhen` and `${…}` interpolations. Same rule: fix errors and re-run before the Phase_Checkpoint.
+
+**Do NOT dismiss an `instance.yaml` dry-run error as "the CRD does not exist yet."** Distinguish the two cases before deciding:
+
+  - `no matches for kind "<Kind>" in version "kro.run/v1alpha1"` — the generated CRD is genuinely absent because the RGD has not been applied. Expected at this phase; note it and continue.
+  - `unknown field "spec.<field>"` — the CRD **exists** and its published schema does not contain that field. This is a real defect in `rgd.yaml`'s `schema.spec` or in `instance.yaml`, and it is 
+  frequently the first visible symptom of an RGD that is already wedged in the cluster. Confirm with:
+
+  ```bash
+  kubectl get crd <plural>.kro.run \
+    -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}'
+
+  kubectl get resourcegraphdefinition <rgd-name> \
+    -o jsonpath='{.status.state}{"\n"}{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}'
+
+  If GraphAccepted=False, the published CRD is stale relative to your rgd.yaml and kro will not republish it. Fix the RGD, then kubectl delete rgd <rgd-name> before reapplying — an in-place kubectl 
+  apply does not clear the condition. A state: Inactive RGD means no instance can reconcile, so this blocks the Phase_Checkpoint.
 
 **Report rendering (MANDATORY once validation is clean):**
 
@@ -896,6 +914,7 @@ After writing every YAML to `<output-dir>/`, run:
 
 ./scripts/run validate-cel <output-dir>/ --format json > /tmp/cel-findings.json
 ```
+See the Adopt_Path Phase 4 grounding loop for how to tell a genuinely-absent CRD (`no matches for kind`) from a stale published CRD (`unknown field "spec.<field>"` + `GraphAccepted=False`). The second case is a real defect, not expected noise.
 
 `--mode create` enforces the Create_Path invariant that ACK CRs MUST NOT carry any `services.k8s.aws/adoption-*` or `deletion-policy` annotation. Every `severity: error` finding MUST be resolved before the Phase_Checkpoint — treat findings as feedback for another authoring pass and re-run validation.
 
