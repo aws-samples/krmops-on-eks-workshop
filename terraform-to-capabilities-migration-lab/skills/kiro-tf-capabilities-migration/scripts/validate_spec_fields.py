@@ -40,9 +40,31 @@ import yaml
 
 ACK_GROUP_MARKER = ".services.k8s.aws/"
 
+# Path to the authoring contract; canonical schema field names are read from it at
+# runtime so the contract stays the single source of truth.
+CONTRACT = Path(__file__).resolve().parent.parent / "references" / "authoring-contract.json"
+
+
+# A Kubernetes object template may only carry these top-level keys. A key outside
+# this set (most commonly `annotations` or `labels` mis-indented out of `metadata`)
+# is accepted by the RGD CRD — resources[].template is
+# `x-kubernetes-preserve-unknown-fields: true`, so kubectl dry-run passes — and
+# then fails at RGD reconciliation with:
+#   error getting field schema for path .<key>: schema not found for field <key>
+COMMON_OBJECT_KEYS = {"apiVersion", "kind", "metadata", "spec"}
+EXTRA_OBJECT_KEYS_BY_KIND = {
+    "ConfigMap": {"data", "binaryData", "immutable"},
+    "Secret": {"data", "stringData", "type", "immutable"},
+    "ServiceAccount": {"secrets", "imagePullSecrets", "automountServiceAccountToken"},
+    "Role": {"rules"},
+    "ClusterRole": {"rules", "aggregationRule"},
+    "RoleBinding": {"subjects", "roleRef"},
+    "ClusterRoleBinding": {"subjects", "roleRef"},
+}
+  # Keys that are almost certainly a mis-indentation rather than an unknown field.
+METADATA_KEYS = {"annotations", "labels", "name", "namespace", "finalizers", "ownerReferences"}
 
 # --- kubectl helpers -------------------------------------------------------
-
 
 def kubectl(args: list[str], context: str | None, kubeconfig: str | None) -> str:
     env = os.environ.copy()
@@ -149,6 +171,102 @@ def collect_targets(doc: dict, file_str: str) -> list[dict]:
         )
     return out
 
+def check_template_shape(doc: dict, file_str: str) -> list[dict]:
+      """Flag top-level keys in an RGD resource template that no K8s object has.
+
+      Catches the mis-indentation class of bug that all three existing validators
+      miss: validate-cel grammar-checks ${...} wherever it appears, this module's
+      spec check reads only template.spec, and the API server preserves unknown
+      fields under resources[].template without validating them.
+      """
+      findings: list[dict] = []
+      if doc.get("kind") != "ResourceGraphDefinition":
+          return findings
+
+      resources = ((doc.get("spec") or {}).get("resources")) or []
+      if not isinstance(resources, list):
+          return findings
+
+      for i, entry in enumerate(resources):
+          if not isinstance(entry, dict):
+              continue
+          tmpl = entry.get("template")
+          if not isinstance(tmpl, dict):
+              continue
+
+          rid = entry.get("id") or f"resources[{i}]"
+          kind = tmpl.get("kind") or "?"
+          allowed = COMMON_OBJECT_KEYS | EXTRA_OBJECT_KEYS_BY_KIND.get(kind, set())
+
+          for key in sorted(set(tmpl.keys()) - allowed):
+              if key in METADATA_KEYS:
+                  msg = (
+                      f"'{key}' is a top-level key of the {kind} template but belongs "
+                      f"under metadata. Re-indent it as metadata.{key}. kro will reject "
+                      f"the RGD with: schema not found for field {key}"
+                  )
+              else:
+                  msg = (
+                      f"'{key}' is not a valid top-level key for a {kind} object "
+                      f"(expected: {', '.join(sorted(allowed))}). kro will reject the "
+                      f"RGD with: schema not found for field {key}"
+                  )
+              findings.append(
+                  {
+                      "severity": "error",
+                      "file": file_str,
+                      "path": f"spec.resources[{i}].template.{key}",
+                      "kind": kind,
+                      "name": rid,
+                      "field": key,
+                      "message": msg,
+                  }
+              )
+      return findings
+
+def check_canonical_schema_fields(doc: dict, file_str: str) -> list[dict]:
+      """Warn when an RGD schema spec field collides with a known-canonical concept
+      under a non-canonical name. Renaming a published field is a CRD breaking
+      change: kro refuses to republish and the RGD wedges Inactive."""
+      findings: list[dict] = []
+      if doc.get("kind") != "ResourceGraphDefinition":
+          return findings
+      try:
+          canon = json.loads(CONTRACT.read_text())["naming_conventions"][
+              "canonical_schema_spec_field_names"
+          ]
+      except Exception:
+          return findings
+
+      allowed = {v for k, v in canon.items() if not k.startswith("_")}
+      # Near-miss detection: same concept, different spelling.
+      aliases = {
+          "dbInstanceIdentifier": "dbIdentifier",
+          "iamPolicyARN": "iamPolicyName",
+          "podIdentityAssociationID": "podIdentityID",
+          "secretName": "smSecretName",
+          "securityGroupID": "sgID",
+      }
+      schema_spec = (((doc.get("spec") or {}).get("schema")) or {}).get("spec") or {}
+      for key in sorted(schema_spec):
+          if key in allowed:
+              continue
+          if key in aliases:
+              findings.append({
+                  "severity": "error",
+                  "file": file_str,
+                  "path": f"spec.schema.spec.{key}",
+                  "kind": "ResourceGraphDefinition",
+                  "name": (doc.get("metadata") or {}).get("name", "?"),
+                  "field": key,
+                  "message": (
+                      f"schema spec field '{key}' is not canonical — use '{aliases[key]}' "
+                      "per authoring-contract.json canonical_schema_spec_field_names. "
+                      "Renaming a published CRD field is a breaking change; kro will "
+                      "refuse to republish the CRD."
+                  ),
+              })
+      return findings
 
 # --- CLI ------------------------------------------------------------------
 
@@ -181,6 +299,8 @@ def main(target: Path, kubeconfig: str | None, context: str | None, output_forma
             continue
         for doc in docs:
             if isinstance(doc, dict):
+                findings.extend(check_template_shape(doc, file_str))
+                findings.extend(check_canonical_schema_fields(doc, file_str))
                 targets.extend(collect_targets(doc, file_str))
 
     if not targets:
