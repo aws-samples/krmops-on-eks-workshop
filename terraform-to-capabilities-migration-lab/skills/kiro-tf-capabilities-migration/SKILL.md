@@ -101,7 +101,41 @@ That single command creates `scripts/.venv/`, installs Python dependencies, and 
 **Skill obligations at every phase:**
 - The skill authors ACK CRs and KRO RGDs in the conversation. Helper scripts NEVER generate YAML. They only parse, ground, or render.
 - After every generation step, the skill runs the relevant validator and treats the returned findings as blocking input to the next Phase_Checkpoint.
-- The skill records each Phase_Checkpoint's Decision_Summary and operator response into an in-conversation `decisions.json` structure. That structure is passed to `render_report.py` at the end of Phase 4.
+- The skill records each Phase_Checkpoint's Decision_Summary and operator response into a `decisions.json` structure. That structure is passed to `render_report.py` at the end of Phase 4.
+
+- **⚠️ Write `decisions.json` INCREMENTALLY — append one `checkpoints[]` entry at each Phase_Checkpoint, never batch all phases at the end.** Write the file to `/tmp/decisions.json` as soon as Phase 1's checkpoint is confirmed, then append at Phases 2, 3 and 4. Rationale: (a) batching duplicates work already done in the chat summaries; (b) a schema mistake discovered at Phase 4 forces a rewrite of ALL phases plus a re-render, whereas an incremental write surfaces it after Phase 1 when the file is ~2 KB. Measured cost of getting this wrong: a full 13 KB rewrite plus a second render pass.
+
+- **⚠️ The `decisions.json` schema is defined by `render_report.py`'s module docstring (the `--decisions` block, lines 7–19). READ IT before authoring the first entry — do NOT infer the shape from this SKILL.md or from the report's rendered output:**
+
+  ```bash
+  sed -n '1,25p' scripts/render_report.py
+  ```
+
+  The contract that is easiest to get wrong:
+
+  | Key | Required shape | Common wrong guess |
+  |---|---|---|
+  | `checkpoints` | array — the top-level list of phase records | `phases` |
+  | `checkpoints[].decisions` | array of **`{title, detail}` objects** | array of plain strings |
+  | `checkpoints[].phase` | string, e.g. `"Phase 1 (Adopt_Path) — Parse State"` | integer `1` |
+  | `checkpoints[].needs_attention` | array of plain strings | array of objects |
+  | `checkpoints[].operator_response` | `Confirm` \| `Correct` \| `Proceed` | free text |
+  | `class_a` / `class_b` | arrays of TF address strings | omitted |
+  | `unsupported` | array of `{address, reason}` | array of strings |
+  | `resource_groups` | array of `{name, resources: [addr]}` | omitted |
+  | `path` | `adopt` \| `create` \| `both` | `mode` |
+
+  A wrong key name does **not** error. `render-report` exits 0 and emits valid HTML with
+  the affected section empty (`"No checkpoints recorded."`). **After rendering, always
+  grep the output to confirm the decisions actually landed:**
+
+  ```bash
+  grep -c 'class="attention"' <output-dir>/report.html   # expect >= 1 per flagged item
+  grep -q 'No checkpoints recorded' <output-dir>/report.html \
+    && echo "FAIL: decisions.json key mismatch — re-read render_report.py docstring"
+  ```
+
+- **Generalize the rule: before authoring ANY input file for a helper script, read that script's docstring/argparse for the expected shape.** These contracts are documented at the top of each file in `scripts/`. The failure mode is consistently silent (exit 0 + missing section), not loud, so a post-render assertion is mandatory rather than optional.
 
 ## Parallel Execution
 
@@ -111,12 +145,19 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
 
 ### Parallel Phase A — Web verification (Phase 1)
 
-**Fan-out unit:** unique TF resource type in `migrate-set.json` (typically 15–25 for a real stack).
+**Fan-out unit: one ACK SERVICE (controller repo), carrying ALL the TF types that map to it** — NOT one subagent per TF type. Derive the set by grouping `migrate-set.json` TF types by their target controller (`aws_iam_role`, `aws_iam_policy`, `aws_iam_role_policy_attachment` → one `iam` agent). Typically 4–8 services for a real stack, versus 15–25 types.
 
-**Each subagent's job:**
-- Take one TF type (e.g. `aws_lambda_permission`).
-- Web-verify per the `Mandatory Web Verification` section: derive service name, check `github.com/aws-controllers-k8s/<service>-controller`, cross-check against `cluster.ack_crds`, fetch the CRD field schema if the Kind exists.
-- Return a small JSON blob: `{tf_type, ack_group, ack_kind, cluster_installed: bool, required_spec_fields: [...], adoption_fields_key: str, notes: str}`.
+Rationale: verification is per **controller repo** — all `aws_iam_*` types resolve from the same `helm/crds` listing and the same `pkg/resource/**` adoption logic. Per-type fan-out re-fetches the identical repo N times for no new information. Measured: 10 TF types collapsed to 5 service agents, ~157s wall-clock.
+
+Grouping is also **more accurate**, not just cheaper: consolidation relationships are only visible to an agent holding the whole service. An agent given `aws_security_group_rule` alone cannot know there is no standalone rule CRD and that rules fold into the parent `SecurityGroup.spec.{ingressRules,egressRules}` — it needs `aws_security_group` in the same context.
+
+**Each subagent's job (one service, N TF types):**
+- Enumerate the controller's Kinds ONCE: `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds` (filenames reveal every Kind).
+- For each TF type in its group: resolve the Kind, or report it as consolidated into a parent Kind, or report no equivalent.
+- **Priority #1 — adoption-fields lookup keys.** These are the highest-value output because they exist ONLY in controller source and are invisible to a live-CRD read. Get them from `pkg/resource/<resource>/resource.go` → `PopulateResourceFromAnnotation` (the `fields["…"]` key), corroborated by `test/e2e/tests/test_<resource>.py` → `ADOPTION_FIELDS`. Report the exact casing.
+- **Priority #2 — upstream-vs-cluster version drift.** Flag any spec field that exists upstream but is missing from `cluster.ack_crds`, naming the controller version that added it. This is the other thing a live-CRD read cannot tell you.
+- Do **NOT** spend effort enumerating required/immutable/all-spec-field-names — the batched live-CRD read (see `§ Coordination hazards`) is authoritative and cheaper. Report only where upstream **disagrees** with the cluster.
+- Return one JSON blob per service: `{service, controller_repo, kinds: [...], mappings: [{tf_type, ack_group, ack_kind, cluster_installed: bool, adoption_fields_key: str, consolidates_into: str|null, notes: str}], version_drift: [{field, kind, added_in_version}]}`.
 
 **Skill obligations:**
 - Collect all results into a single "verified mapping table" in-conversation.
@@ -163,6 +204,8 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
 
 Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s parallel). Projected on 3-RGD × 2-mode (6 tuples): ~4-5× speedup, bounded by the slowest tuple.
 
+**Housekeeping (observed on a `--mode adopt` run):** `validate-all` auto-discovers `<mode>/` subtrees and writes a `findings.json` for **every** mode directory it creates, including an empty `create/findings.json` on an adopt-only run. Delete the unused mode directory before rendering so the output tree matches the requested mode (or scope the sweep with `--modes adopt`).
+
 **Skill obligations:**
 - Aggregate all findings into `<mode>/findings.json` for report rendering (validate-all does this automatically).
 - If ANY subagent (or validate-all tuple) returns `severity: error`, the Phase 4 checkpoint blocks and hands the errors back to Phase B for that specific RGD (targeted re-authoring), not all of them.
@@ -180,7 +223,46 @@ Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s 
 
 - **Shared kubeconfig / kubectl.** Read-only server-side calls (`kubectl apply --dry-run=server`, `kubectl get crd`) are safe under high concurrency. Write-side (real `kubectl apply`, `adopt.py`) stays serial.
 - **Decision drift between subagents.** Two authoring subagents can pick incompatible label conventions if the shared authoring contract is fuzzy. Encode the contract as a static JSON handed to every subagent, not as prose.
-- **kubectl startup cost dominates on very short calls.** For future optimization: batch multiple manifests per `kubectl apply --dry-run` call within a subagent, don't shell out per-file.
+- **⚠️ kubectl startup cost dominates on short calls — BATCH CRD reads. This is a rule, not a future optimization.** Each invocation costs ~1–2s of process startup, so a 7-iteration shell loop over CRDs wastes ~30–60s versus one call. `kubectl get crd` accepts **multiple names in a single invocation**, and one `-o json` pass carries spec properties, `required`, `x-kubernetes-validations` (immutability) and status properties together — so enumerate all of them in ONE call, not three passes:
+
+  ```bash
+  kubectl get crd \
+    dbinstances.rds.services.k8s.aws \
+    dbsubnetgroups.rds.services.k8s.aws \
+    securitygroups.ec2.services.k8s.aws \
+    roles.iam.services.k8s.aws \
+    policies.iam.services.k8s.aws \
+    secrets.secretsmanager.services.k8s.aws \
+    podidentityassociations.eks.services.k8s.aws \
+    -o json > /tmp/crds.json
+
+  python3 - /tmp/crds.json <<'PY'
+  import sys, json
+  for c in json.load(open(sys.argv[1]))["items"]:
+      props = c["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+      spec = props["spec"]
+      status = props.get("status", {})
+      p = spec["properties"]
+      print("==", c["spec"]["names"]["kind"])
+      print("  required :", spec.get("required", []))
+      print("  immutable:", [k for k in p if p[k].get("x-kubernetes-validations")])
+      print("  spec     :", sorted(p))
+      print("  status   :", sorted(status.get("properties", {})))
+  PY
+  ```
+
+  Writing to `/tmp/crds.json` first means later questions ("is field X present on Kind Y?")
+  are answered from the local file instead of another round trip to the API server.
+
+  Anti-pattern to avoid — three loops over the same list, ~21 invocations where 1 suffices:
+
+  ```bash
+  for c in <7 crds>; do kubectl get crd $c -o jsonpath='...spec.properties'; done   # ✗
+  for c in <7 crds>; do kubectl get crd $c -o json | ... required/immutable; done   # ✗
+  for c in <7 crds>; do kubectl get crd $c -o json | ... status; done               # ✗
+  ```
+
+  Same rule for `kubectl apply --dry-run=server`: pass repeated `-f` flags (or `-f <dir>`) in one invocation rather than shelling out per file.
 
 ## Workflow
 
@@ -285,6 +367,22 @@ Then reason over the emitted JSON:
 4. Identify resources that ACK consolidates into parent CRs (e.g., `aws_iam_role_policy_attachment` → merged into Role).
 5. The cross-reference and dependency graphs are already in `migrate-set.cross_refs`; use them for RGD `readyWhen` ordering.
 6. Document any resources without an ACK Kind installed in the target cluster.
+
+**Do NOT re-derive what `discover` already computed.** Before reasoning by hand, check
+`migrate-set.json` for the answer:
+
+| Need | Already in `migrate-set.json` | Don't do this instead |
+|---|---|---|
+| Dependency order for RGD wiring | `cross_refs[]` — `{from, to, source}`, populated from both state and HCL | Re-reading `attributes` to guess which resource references which |
+| ACK `plural` for `adopted_resources` (Phase 3) and for `kubectl get crd` | `cluster.ack_crds[].plural` | Pluralizing the Kind by hand (`Policy` → `policys`) |
+| Kind / group / scope / served version | `cluster.ack_crds[]` | A second `kubectl get crd` round trip |
+| Which fields were redacted | `resources[].sensitive_fields` | Scanning attributes for `***REDACTED***` |
+| Module attribution for `rekoncile.io/tf-module` | `resources[].module` | Parsing the TF address string |
+
+Derive the dependency order by filtering `cross_refs` to adoptable-to-adoptable edges and
+topologically sorting; do not hand-build the graph. Note that `cross_refs` includes edges to
+**excluded** resources too (e.g. `aws_db_instance → random_password`), so filter to the
+Class B set first.
 
 **Output:** Classified list of adoptable resources with identifiers, dependencies, resource-group assignments, and Class A/B/C classification.
 
@@ -475,7 +573,45 @@ Generate:
 1. **Instance YAML** — populated with values extracted from TF state (names, ARNs, region, etc.)
 2. **MIGRATION-NOTES.md** — resources adopted, resources skipped, validation steps, **required IAM permissions**
 
+**⚠️ Author each decision ONCE. `MIGRATION-NOTES.md` and `decisions.json` have different jobs — do not let the notes restate the phase narrative.**
+
+| Artifact | Sole responsibility | MUST NOT contain |
+|---|---|---|
+| `decisions.json` → `report.html` | The phase-by-phase decision record, per-checkpoint needs-attention items, operator responses | Operator runbook commands |
+| `MIGRATION-NOTES.md` | **Operator-actionable content only:** apply order, verification commands, IAM/RBAC requirements, unsupported TF attributes, rollback procedure | A re-narration of Phase 1–4 decisions — link to `report.html` instead |
+| Chat Phase_Checkpoint summary | The pause itself, so the operator can respond | — |
+
+Write the notes as if the reader has `report.html` open in another tab. For decision
+*rationale*, cross-reference rather than restate:
+
+```markdown
+> Decision record and resource graph: see `report.html` § Phase decisions.
+```
+
+A ~15 KB MIGRATION-NOTES.md on a 7-resource stack is a smell — it means the phase
+narrative was copied in. Target the operator-actionable subset.
+
 **Grounding loop (MANDATORY before the Phase_Checkpoint):**
+
+**⚠️ Use `validate-all` — do NOT also run the three validators serially.** If the inline
+per-resource gates already ran during Phases 2–3 (as Phase 2 requires), a serial Phase 4
+re-run repeats identical work for no new signal — measured at ~20s of pure duplication on
+a 1-RGD stack, and it scales with RGD count. One call covers every `(mode, rgd)` tuple
+concurrently and writes the per-mode `findings.json` that `render-report` consumes:
+
+```bash
+./scripts/run validate-all \
+  --output <output-dir>/ \
+  --context $KUBECTL_CONTEXT \
+  --workers 8
+```
+
+Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
+default. Reach for the three serial commands below **only** when `validate-all` reports an
+error and you need to isolate one validator's output, or when debugging a single file.
+
+<details>
+<summary>Serial per-validator invocations (isolation/debugging only)</summary>
 
 After writing every YAML to `<output-dir>/`, run:
 
@@ -493,6 +629,8 @@ After writing every YAML to `<output-dir>/`, run:
 ./scripts/run validate-cel <output-dir>/ --format json > /tmp/cel-findings.json
 ```
 
+</details>
+
 `validate-manifest` runs `kubectl apply --dry-run=server` for every file (real CRD schema check against the target cluster) AND enforces adoption-annotation invariants (adopt CRs MUST carry `services.k8s.aws/adoption-policy` and `services.k8s.aws/deletion-policy: retain`; the check only applies to ACK CRs — RGDs and native objects are skipped). Every `severity: error` finding MUST be fixed before the Phase_Checkpoint; treat them as feedback for another authoring pass, then re-run validation. Do NOT proceed with unresolved errors — the previous CLI's retry-with-feedback loop is replaced by this explicit skill-driven cycle.
 
 `validate-cel` catches CEL grammar errors in `readyWhen` and `${…}` interpolations. Same rule: fix errors and re-run before the Phase_Checkpoint.
@@ -500,8 +638,7 @@ After writing every YAML to `<output-dir>/`, run:
 **Do NOT dismiss an `instance.yaml` dry-run error as "the CRD does not exist yet."** Distinguish the two cases before deciding:
 
   - `no matches for kind "<Kind>" in version "kro.run/v1alpha1"` — the generated CRD is genuinely absent because the RGD has not been applied. Expected at this phase; note it and continue.
-  - `unknown field "spec.<field>"` — the CRD **exists** and its published schema does not contain that field. This is a real defect in `rgd.yaml`'s `schema.spec` or in `instance.yaml`, and it is 
-  frequently the first visible symptom of an RGD that is already wedged in the cluster. Confirm with:
+  - `unknown field "spec.<field>"` — the CRD **exists** and its published schema does not contain that field. This is a real defect in `rgd.yaml`'s `schema.spec` or in `instance.yaml`, and it is frequently the first visible symptom of an RGD that is already wedged in the cluster. Confirm with:
 
   ```bash
   kubectl get crd <plural>.kro.run \
@@ -509,13 +646,19 @@ After writing every YAML to `<output-dir>/`, run:
 
   kubectl get resourcegraphdefinition <rgd-name> \
     -o jsonpath='{.status.state}{"\n"}{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}'
+  ```
 
-  If GraphAccepted=False, the published CRD is stale relative to your rgd.yaml and kro will not republish it. Fix the RGD, then kubectl delete rgd <rgd-name> before reapplying — an in-place kubectl 
-  apply does not clear the condition. A state: Inactive RGD means no instance can reconcile, so this blocks the Phase_Checkpoint.
+  If `GraphAccepted=False`, the published CRD is stale relative to your `rgd.yaml` and kro will not republish it. Fix the RGD, then `kubectl delete rgd <rgd-name>` before reapplying — an in-place `kubectl apply` does not clear the condition. A `state: Inactive` RGD means no instance can reconcile, so this blocks the Phase_Checkpoint.
 
 **Report rendering (MANDATORY once validation is clean):**
 
-Merge `/tmp/spec-fields-findings.json`, `/tmp/manifest-findings.json` and `/tmp/cel-findings.json` into a single `/tmp/findings.json` (concatenate the `findings` arrays), then write the operator report:
+If you used `validate-all` (the default), it has already written `<output-dir>/<mode>/findings.json` — pass that straight to `render-report`, no merge needed:
+
+```bash
+cp <output-dir>/adopt/findings.json /tmp/findings.json
+```
+
+Only if you ran the serial validators for isolation: merge `/tmp/spec-fields-findings.json`, `/tmp/manifest-findings.json` and `/tmp/cel-findings.json` into a single `/tmp/findings.json` (concatenate the `findings` arrays). Then write the operator report:
 
 ```bash
 ./scripts/run render-report \
@@ -897,7 +1040,46 @@ Generate:
 1. **Instance YAML** — populated with example values that satisfy all required RGD schema fields (Req 4.8)
 2. **MIGRATION-NOTES.md** (or equivalent docs) — resources generated, unsupported resources recorded, permission guidance
 
+**⚠️ Author each decision ONCE. `MIGRATION-NOTES.md` and `decisions.json` have different jobs — do not let the notes restate the phase narrative.**
+
+| Artifact | Sole responsibility | MUST NOT contain |
+|---|---|---|
+| `decisions.json` → `report.html` | The phase-by-phase decision record, per-checkpoint needs-attention items, operator responses | Developer-facing usage instructions |
+| `MIGRATION-NOTES.md` | **Actionable content only:** how a developer consumes the self-serve RGD, required RGD schema inputs, IAM/RBAC requirements, unsupported TF resources and attributes | A re-narration of Phase 1–4 decisions — link to `report.html` instead |
+| Chat Phase_Checkpoint summary | The pause itself, so the operator can respond | — |
+
+Write the notes as if the reader has `report.html` open in another tab. For decision
+*rationale*, cross-reference rather than restate:
+
+```markdown
+> Decision record and resource graph: see `report.html` § Phase decisions.
+```
+
+On the Create_Path the notes' job is the **developer contract** for the published
+abstraction (what to put in an instance, what each schema field means), not a migration
+narrative. If the notes are mostly phase history, the split has been lost.
+
 **Grounding loop (MANDATORY before the Phase_Checkpoint):**
+
+**⚠️ Use `validate-all` — do NOT also run the three validators serially.** If the inline
+per-resource gates already ran during Phases 2–3 (as Phase 2 requires), a serial Phase 4
+re-run repeats identical work for no new signal — measured at ~20s of pure duplication on
+a 1-RGD stack, and it scales with RGD count. One call covers every `(mode, rgd)` tuple
+concurrently and writes the per-mode `findings.json` that `render-report` consumes:
+
+```bash
+./scripts/run validate-all \
+  --output <output-dir>/ \
+  --context $KUBECTL_CONTEXT \
+  --workers 8
+```
+
+Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
+default. Reach for the three serial commands below **only** when `validate-all` reports an
+error and you need to isolate one validator's output, or when debugging a single file.
+
+<details>
+<summary>Serial per-validator invocations (isolation/debugging only)</summary>
 
 After writing every YAML to `<output-dir>/`, run:
 
@@ -914,13 +1096,22 @@ After writing every YAML to `<output-dir>/`, run:
 
 ./scripts/run validate-cel <output-dir>/ --format json > /tmp/cel-findings.json
 ```
+
+</details>
+
 See the Adopt_Path Phase 4 grounding loop for how to tell a genuinely-absent CRD (`no matches for kind`) from a stale published CRD (`unknown field "spec.<field>"` + `GraphAccepted=False`). The second case is a real defect, not expected noise.
 
 `--mode create` enforces the Create_Path invariant that ACK CRs MUST NOT carry any `services.k8s.aws/adoption-*` or `deletion-policy` annotation. Every `severity: error` finding MUST be resolved before the Phase_Checkpoint — treat findings as feedback for another authoring pass and re-run validation.
 
 **Report rendering (MANDATORY once validation is clean):**
 
-Merge findings into `/tmp/findings.json` and render:
+If you used `validate-all` (the default), it has already written `<output-dir>/create/findings.json` — pass that straight to `render-report`, no merge needed:
+
+```bash
+cp <output-dir>/create/findings.json /tmp/findings.json
+```
+
+Only if you ran the serial validators for isolation, merge the three findings files into `/tmp/findings.json` (concatenate the `findings` arrays). Then render:
 
 ```bash
 ./scripts/run render-report \
@@ -1090,6 +1281,28 @@ See `references/known-limitations.md` for detailed documentation of these future
 ## Mandatory Web Verification (All Phases)
 
 **Before generating ANY output (ACK CRs, RGD templates, or documentation), the agent MUST verify each resource's CRD schema against live documentation.** Local reference files (`controllers-catalog.md`, `aws-to-ack-mappings.md`) provide initial mappings, but they may be outdated. The agent must:
+
+### Division of labour — what the web is FOR (and what it is not)
+
+The live cluster and the web answer **different** questions. Asking both for the same fact
+is the single largest source of wasted Phase 1 time.
+
+| Question | Authoritative source | Why |
+|---|---|---|
+| Does this Kind exist / is it installed? | **live cluster** (`cluster.ack_crds`) | A CRD is installed or it isn't |
+| Which spec fields exist? Which are required? Which are immutable? | **live cluster** (one batched `kubectl get crd … -o json`) | The cluster's controller version is what will reconcile your CR |
+| Status field names and types (for `readyWhen`) | **live cluster** | Same reason |
+| **What are the `adoption-fields` lookup keys, and their exact casing?** | **web — controller source** | NOT derivable from any CRD. Lives in `pkg/resource/<r>/resource.go` → `PopulateResourceFromAnnotation`. Guessing here is the #1 cause of adoption failures |
+| **Is a TF resource consolidated into a parent Kind?** | **web — CRD filename listing** | Absence of a Kind is only provable by enumerating all of them |
+| **Does a field exist upstream but not on this cluster?** | **web — compare to `cluster.ack_crds`** | Reveals controller-version drift; the cluster alone cannot tell you a field was added later |
+
+**Rule:** web-verify **existence, adoption keys, consolidation, and version drift**.
+Read **field names, required sets, immutability, and status shapes from the live CRDs.**
+Do not spend web calls re-deriving what one batched `kubectl` call already returned.
+
+Two measured examples of why the web half is non-negotiable — both invisible to a live CRD:
+- IAM Policy is adoptable **only by `arn`**; `GetPolicy` has no name lookup, so `{"name":…}` sits in `NotFound` forever.
+- `secretsmanager/Secret.spec.recoveryWindowInDays` exists upstream (≥ v1.6.0) but not on older clusters — writing it means silent pruning.
 
 ### Phase 1 — Controller & CRD Existence Verification
 

@@ -127,8 +127,8 @@
         "_note": "Non-authoritative snapshot (verified 2026-09 against each controller's main branch). The live enumeration above always wins. Controllers add fields over time — never omit a field solely because it appears here without re-checking.",
         "secretsmanager.services.k8s.aws/Secret": {
           "absent": ["forceDeleteWithoutRecovery"],
-          "present_but_often_assumed_absent": ["recoveryWindowInDays"],
-          "note": "forceDeleteWithoutRecovery is not a CRD spec field. recoveryWindowInDays IS a valid CRD field (format: int64) and maps TF recovery_window_in_days; ACK accepts 0 to request immediate deletion (mapped to the DeleteSecret ForceDeleteWithoutRecovery parameter). Do NOT drop recoveryWindowInDays."
+          "version_dependent": ["recoveryWindowInDays"],
+          "note": "forceDeleteWithoutRecovery is not a CRD spec field. recoveryWindowInDays is VERSION-DEPENDENT: added upstream in secretsmanager-controller v1.6.0 (absent at the v1.5.0 tag, present at v1.6.0 — verified by tag diff) and absent on every earlier controller. ENUMERATE THE LIVE CRD before writing it (verified absent on an EKS Auto Mode managed capability cluster in 2026-09). If present, map TF recovery_window_in_days (0 requests immediate deletion via the DeleteSecret ForceDeleteWithoutRecovery parameter). If absent, OMIT it and record it under 'Unsupported TF attributes' — writing it anyway means the API server silently prunes it. Never write this field on the basis of this note alone."
         },
         "rds.services.k8s.aws/DBInstance": {
           "absent": ["skipFinalSnapshot", "finalSnapshotIdentifier", "applyImmediately"],
@@ -242,7 +242,7 @@
     "ec2.services.k8s.aws/SecurityGroup": "{\"id\": \"sg-...\"}",
     "ec2.services.k8s.aws/LaunchTemplate": "{\"launchTemplateID\": \"lt-...\"}",
     "iam.services.k8s.aws/Role": "{\"name\": \"<role-name>\"}",
-    "iam.services.k8s.aws/Policy": "{\"name\": \"<policy-name>\"} OR {\"arn\": \"arn:aws:iam::...\"}",
+    "iam.services.k8s.aws/Policy": "{\"arn\": \"arn:aws:iam::<acct>:policy/<name>\"}  // arn ONLY — name can NEVER resolve: IAM GetPolicy has no name-based lookup, so the CR sits in NotFound forever. Read the ARN from tfstate attributes.arn.",
     "iam.services.k8s.aws/OpenIDConnectProvider": "{\"arn\": \"arn:aws:iam::...:oidc-provider/...\"}",
     "kms.services.k8s.aws/Key": "{\"keyID\": \"<uuid>\"}",
     "kms.services.k8s.aws/Alias": "{\"name\": \"alias/...\"}",
