@@ -105,6 +105,8 @@ That single command creates `scripts/.venv/`, installs Python dependencies, and 
 
 - **⚠️ Write `decisions.json` INCREMENTALLY — append one `checkpoints[]` entry at each Phase_Checkpoint, never batch all phases at the end.** Write the file to `/tmp/decisions.json` as soon as Phase 1's checkpoint is confirmed, then append at Phases 2, 3 and 4. Rationale: (a) batching duplicates work already done in the chat summaries; (b) a schema mistake discovered at Phase 4 forces a rewrite of ALL phases plus a re-render, whereas an incremental write surfaces it after Phase 1 when the file is ~2 KB. Measured cost of getting this wrong: a full 13 KB rewrite plus a second render pass.
 
+  **Keep each entry terse: `detail` is ONE sentence (two maximum), `needs_attention` strings are one sentence plus the consequence.** The report renders these as a decision record, not a narrative. A checkpoint with more than ~8 `decisions[]` entries is a smell — merge related ones. Rationale: this JSON is emitted on the critical path, and verbosity here is pure wall-clock with no reader benefit. Reference run for scale: 33 decision objects with multi-sentence details came to ~250 dense lines, all serial.
+
 - **⚠️ The `decisions.json` schema is defined by `render_report.py`'s module docstring (the `--decisions` block, lines 7–19). READ IT before authoring the first entry — do NOT infer the shape from this SKILL.md or from the report's rendered output:**
 
   ```bash
@@ -147,16 +149,49 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
 
 **Fan-out unit: one ACK SERVICE (controller repo), carrying ALL the TF types that map to it** — NOT one subagent per TF type. Derive the set by grouping `migrate-set.json` TF types by their target controller (`aws_iam_role`, `aws_iam_policy`, `aws_iam_role_policy_attachment` → one `iam` agent). Typically 4–8 services for a real stack, versus 15–25 types.
 
+**⚠️ ONE AGENT PER SERVICE. NEVER BUNDLE TWO SERVICES INTO ONE AGENT.** The fan-out unit is one controller repo. Bundling is not a cheaper version of the fan-out — it *is* the serial path, relocated inside a subagent, and it silently becomes the long pole.
+
+Measured on a 5-service stack collapsed into 3 agents: the solo `iam` agent finished in 180s / 29 tool uses; the `ec2`+`eks` bundle took **249s / 32 tool uses** and the `rds`+`secretsmanager` bundle 178s / 22. Wall-clock is bounded by the slowest AGENT, so the bundle set the floor at 249s where 5 solo agents would have landed near 180s — the cost of bundling was ~70s of pure serialization, plus it hid which repo was slow.
+
+Bundling is tempting when two services have one TF type each. Resist it: two repos in one context means two sequential `helm/crds` listings, two sequential `resource.go` reads, and no parallelism between them. The per-agent spawn overhead you save is ~1s; the serialization you buy is tens of seconds.
+
+The ONLY correct reason to put two TF types in one agent is that they resolve from the SAME controller repo (all `aws_iam_*` → one `iam` agent). Count your agents before spawning: **it must equal the number of distinct ACK services, not something smaller.**
+
 Rationale: verification is per **controller repo** — all `aws_iam_*` types resolve from the same `helm/crds` listing and the same `pkg/resource/**` adoption logic. Per-type fan-out re-fetches the identical repo N times for no new information. Measured: 10 TF types collapsed to 5 service agents, ~157s wall-clock.
 
 Grouping is also **more accurate**, not just cheaper: consolidation relationships are only visible to an agent holding the whole service. An agent given `aws_security_group_rule` alone cannot know there is no standalone rule CRD and that rules fold into the parent `SecurityGroup.spec.{ingressRules,egressRules}` — it needs `aws_security_group` in the same context.
 
 **Each subagent's job (one service, N TF types):**
 - Enumerate the controller's Kinds ONCE: `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds` (filenames reveal every Kind).
+
+  **Stop line for consolidation questions.** "Does TF type X fold into a parent Kind?" is fully answered by TWO listings: the `helm/crds` filenames and the `pkg/resource/` package list. If neither contains a matching Kind/package, it consolidates — done. Report the parent field path and the exact nested field casing from `apis/v1alpha1/types.go`. Reading `sdk.go`/`hooks.go`/`delta.go` is OUT OF SCOPE for this question; those are the largest files in the repo and the doorway to a destructive-reconcile audit (see the prohibition below). Watch for status-only lookalikes: a `SecurityGroupRule` Go type exists in `ec2-controller` but is read-only `SecurityGroup.status.rules[]`, not a Kind.
 - For each TF type in its group: resolve the Kind, or report it as consolidated into a parent Kind, or report no equivalent.
 - **Priority #1 — adoption-fields lookup keys.** These are the highest-value output because they exist ONLY in controller source and are invisible to a live-CRD read. Get them from `pkg/resource/<resource>/resource.go` → `PopulateResourceFromAnnotation` (the `fields["…"]` key), corroborated by `test/e2e/tests/test_<resource>.py` → `ADOPTION_FIELDS`. Report the exact casing.
-- **Priority #2 — upstream-vs-cluster version drift.** Flag any spec field that exists upstream but is missing from `cluster.ack_crds`, naming the controller version that added it. This is the other thing a live-CRD read cannot tell you.
+- **Priority #2 — version drift, BOUNDED. Read the installed platform version FIRST, then ask a scoped question.** Before the fan-out, the main skill MUST establish the installed controller line and pass it to every subagent:
+
+  ```bash
+  # EKS Auto Mode (bundled managed capability)
+  aws eks list-capabilities --cluster-name <cluster> --region <region>
+
+  # self-managed controllers
+  kubectl get deploy -A -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.template.spec.containers[*].image}{"\n"}{end}' | grep -i controller
+  ```
+
+  **⚠️ DO NOT BISECT RELEASE TAGS.** "When was this mechanism introduced?" is the wrong question and it is expensive: one run fetched `resource.go` across ~8 tags per service (v1.2.6, v1.3.0, v1.3.5, v1.3.10–13, v1.3.14, v1.3.15, v1.3.20, v1.4.0) to pin an adoption-by-annotation gate that the installed version — ACK 46.137.1-eks-1, a bundled managed capability — cleared by years. Every one of those fetches was answerable from a single pre-fan-out command.
+
+  The ONLY drift question worth asking is scoped to fields you actually intend to write: "is any field I will write absent from `cluster.ack_crds` but present upstream?" That is a diff against the live CRD list you already hold — usually zero fetches, never a tag walk. If the answer is yes, name the version that added it and OMIT the field (it would be silently pruned).
+
+  Apply the Phase-A defect test: if the installed version already clears a gate, establishing when the gate appeared changes no action, so do not research it.
 - Do **NOT** spend effort enumerating required/immutable/all-spec-field-names — the batched live-CRD read (see `§ Coordination hazards`) is authoritative and cheaper. Report only where upstream **disagrees** with the cluster.
+- **Do NOT audit destructive-reconcile-on-omit.** Do not go looking for which spec fields, if omitted, would make the controller delete live AWS state. `sdk.go`/`hooks.go`/`delta.go` are the biggest files in each repo and read per Kind — on a 5-service run that audit was an estimated 60–70% of 138 fetches / ~276k subagent tokens — and it cannot produce an actionable answer. It establishes only that a controller's sync path deletes live-minus-desired (`syncTags`→`Untag*`, `syncManagedPolicies`→`Detach*`, `syncSGRules`→`Revoke*`), which is common across ACK controllers. The deciding question — whether anything persistently presents the field as EMPTY desired state — is pre-resolved in `references/authoring-contract.json` → `rgd_template_rules.omission_is_not_destructive` for both `adoption-policy: adopt` (the runtime backfills the observed spec into the CR, so later reconciles see an empty delta) and KRO (server-side apply never claims unmentioned fields). Populate `spec.tags` from `tags_all` and enumerate consolidated children unconditionally — prudent, self-documenting, and the mitigation for the `backfill_failure_race` documented there — without researching whether omission would have been unsafe.
+
+  **⚠️ This prohibition binds subagents even when they arrive at the sync path SIDEWAYS.** Keeping it off the priority list is not sufficient: a consolidation question ("does `aws_iam_role_policy_attachment` fold into a parent?") is adjacent enough that an agent opens `hooks.go` on its own initiative and returns a detach/revoke finding nobody asked for. Observed: an `iam` subagent volunteered "omitted attachments will be silently detached on first reconcile" — an overstatement — and it propagated into a Decision_Summary and a needs-attention item before being caught.
+
+  Therefore every Phase A subagent prompt MUST carry this clause verbatim:
+
+  > If you encounter a controller sync path that deletes live-minus-desired (detach, revoke, prune), that is HALF of a destructive claim and is NOT a finding on its own. It is common across ACK controllers and already documented. Do not report it unless you can also name what persistently presents the field as EMPTY desired state. `adoption-policy: adopt` does not (the runtime backfills the `ReadOne`-observed spec, so later reconciles see an empty delta) and KRO does not (server-side apply never claims unmentioned fields). Report consolidation as a field-mapping fact only.
+
+  Root cause of the leak: `references/authoring-contract.json` — which states all of this correctly in `rgd_template_rules.omission_is_not_destructive` — is handed to Phase B *authoring* agents and never to Phase A *research* agents. Until that is fixed, the clause above must be inlined into the research prompt. If a run surfaces a genuinely NEW destructive-path fact (an adoption policy other than `adopt`, or create-path-only controller behaviour), promote it into `authoring-contract.json` ONCE rather than rediscovering it per run.
 - Return one JSON blob per service: `{service, controller_repo, kinds: [...], mappings: [{tf_type, ack_group, ack_kind, cluster_installed: bool, adoption_fields_key: str, consolidates_into: str|null, notes: str}], version_drift: [{field, kind, added_in_version}]}`.
 
 **Skill obligations:**
@@ -169,6 +204,8 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 
 **Fan-out unit:** one resource group from the Phase 1 grouping decision (typically 2–5 groups; e.g., network-stack, eks-stack, app-stack).
 
+**⚠️ Prescribed fan-outs degenerate gracefully in their *stated* unit, but NEVER collapse to serial authoring.** With ONE resource group, do not author Phases 2–4 inline — re-split by ARTIFACT TYPE instead (see § Single-RGD fan-out below). Spawn overhead is ~1s per agent; the serial emission you avoid is minutes. Optimize for wall-clock, not for agent count.
+
 **Each subagent's job (per RGD, per mode):**
 - Receive: the verified mapping table (from Phase A), the list of resource addresses in this group, the resolved TF attributes for each, and the mode (adopt or create).
 - Author `<rgd-name>/rgd.yaml` + `<rgd-name>/instance.yaml` + `<rgd-name>/resources/*.yaml`.
@@ -180,6 +217,42 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 - All subagents receive the SAME **authoring contract** at `references/authoring-contract.json` — hand it to each subagent verbatim. It encodes label conventions, annotation shape, adopt vs create spec rules, adoption-fields lookup keys per Kind, known CRD OpenAPI-required minima, consolidation rules, and the capability role trust policy. Update in ONE place; never fork per subagent.
 - If any subagent hits 3 failed attempts, surface to the operator at Phase 4 checkpoint — do not silently drop.
 - Serial follow-up in the main skill: assemble the per-RGD outputs into `migration-output/{adopt,create}/{rgd}/...`, then run one final aggregate validation over all directories (Phase C below).
+
+**⚠️ Decide the COMPLETE artifact shape before the first `Write`. Re-editing a just-written file is a latency defect, not a correction.**
+
+Each `Edit` re-emits old and new text serially, and any edit after a validation pass invalidates that pass and forces a re-run. Before writing a CR or an RGD, settle: which optional-but-live fields are being enumerated (`spec.tags` from `tags_all`, consolidated children); whether every value is a literal or a `${schema.spec.*}` reference; and whether every declared schema field is actually consumed by a template. A declared-and-unused schema field, or a hardcoded value that should have been parameterized, means the shape was not settled.
+
+Observed regression: `rgd.yaml` was written (~290 lines) then amended by **9 sequential `Edit` calls** — adding `spec.tags` to all 7 resource templates, replacing a hardcoded policy name with a schema field, and removing a declared-but-unused `tags: map[string]string` schema field. Because the file changed after validation, it also forced a second `validate-all` sweep (+25s).
+
+Corollary: independent files MUST be written in ONE message with multiple parallel `Write` calls — never one message per file.
+
+#### Single-RGD fan-out (by artifact type)
+
+When the Phase 1 grouping yields ONE resource group, the per-RGD unit gives no parallelism — so split the authoring by artifact instead. Target ~8–11 concurrent agents, within a `min(16, cores-2)` concurrency cap.
+
+**Prerequisite — publish the shared interface FIRST, in the main context, and write it to ONE FILE.** Before spawning, the skill MUST fix the interface and pass every agent its **path** (e.g. `/tmp/shared-interface.md`). Do NOT inline it into each prompt — that re-emits the same bytes once per agent on the main thread's critical path.
+
+The file MUST carry: (a) the final `schema.spec` field names (the canonical names from `authoring-contract.json` → `naming_conventions.canonical_schema_spec_field_names`, plus any added for CRD-required minima); (b) the resource `id` per Kind, alongside its filename and CR `metadata.name`; (c) the run parameters — RGD name, generated Kind, namespace and mode; (d) the verified Phase A mapping table including adoption-fields keys; (e) the live-CRD required/immutable/absent-field lists already read in Phase 1, plus any tag-shape exceptions; (f) the dependency-edge table; (g) the exact per-resource values from tfstate; (h) `references/authoring-contract.json` (by path is sufficient). Without this, agents pick divergent schema field names and the assembled RGD does not typecheck.
+
+Measured: one 15.9 KB interface file drove 6 concurrent agents to **zero schema drift** — all 15 `schema.spec` field names agreed, all 7 resource ids agreed, the instance matched the schema exactly, and every agent passed its gate on the first attempt.
+
+**Fan-out — every applicable row below is MANDATORY, not a menu:**
+- One agent per ACK CR under `resources/` (7 on the reference stack; batch to ~3 if the CR count exceeds ~10). Each writes its own file and runs its own gate.
+- One agent for `rgd.yaml` + `instance.yaml` together — they share the schema, so splitting them guarantees drift.
+- One agent for `MIGRATION-NOTES.md`.
+- One agent for the `decisions.json` Phase 2–4 `checkpoints[]` entries. **These are an ARTIFACT, not skill bookkeeping — delegate them like any other.** Emitting them from the main thread serializes ~10–15 KB after the fan-out has drained, which is the worst possible placement. Spawn this agent concurrently with the CR agents; it needs only the Phase 1 checkpoint entry and the shared interface, both of which exist before authoring starts.
+
+**Hand every authoring agent its gate as a literal, copy-paste-ready command line.** Agents MUST NOT read helper-script source to discover invocation syntax — if a fan-out prompt does not already contain the exact command, that is a defect in the prompt, not a research task for the agent. Reading `scripts/*.py` is warranted ONLY when authoring a JSON input file that a script consumes (e.g. `decisions.json` for `render_report.py`), never to run a validator. Observed cost of getting this wrong: ~8s of one agent's critical path spent reading `validate_cel.py` and `validate_spec_fields.py` while its prompt already contained both commands.
+
+**⚠️ Comment budget for generated YAML.** Comments must not exceed ~10% of a generated file's bytes. Allowed: a ≤3-line header naming the targeted KRO/ACK version, and ONE short line where a value's provenance or a constraint is genuinely non-obvious (an immutable field kept literal; a field deliberately omitted because it is absent from the live CRD; a consolidated child's TF origin).
+
+NOT allowed: ASCII separator/banner blocks; multi-line per-resource preambles; restating the phase narrative, the adoption-policy semantics, or anything already in `report.html` / `MIGRATION-NOTES.md`. Provenance belongs in the `rekoncile.io/{from-tf-address,tf-attributes}` annotations — which are load-bearing and machine-readable — not in prose beside them.
+
+Rationale: generated YAML is emitted serially on one agent's critical path, so comment bytes are wall-clock. Measured: `rgd.yaml` at 35% comments (6,008 of 17,223 B) inside an 82-second single write, with the same content already rendered in two other artifacts. That one file was 1.9× the size of all seven CRs combined.
+
+**Main thread keeps ONLY:** assembly, the single `validate-all`, `render-report`, and the post-render `grep` assertions.
+
+Per-stage effort tuning is appropriate here: `effort: low` for the mechanical per-CR agents, default effort for the `rgd.yaml` agent (CEL, `readyWhen` scope, dependency-edge and immutability rules live there). Do NOT lower effort globally — see § Do NOT reduce reasoning effort globally.
 
 ### Parallel Phase C — Validation sweep (Phase 4)
 
@@ -204,7 +277,7 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 
 Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s parallel). Projected on 3-RGD × 2-mode (6 tuples): ~4-5× speedup, bounded by the slowest tuple.
 
-**Housekeeping (observed on a `--mode adopt` run):** `validate-all` auto-discovers `<mode>/` subtrees and writes a `findings.json` for **every** mode directory it creates, including an empty `create/findings.json` on an adopt-only run. Delete the unused mode directory before rendering so the output tree matches the requested mode (or scope the sweep with `--modes adopt`).
+**Housekeeping — always scope the sweep to the requested mode.** `validate-all` auto-discovers `<mode>/` subtrees and writes a `findings.json` for **every** mode directory it creates, including an empty `create/findings.json` on an adopt-only run. **Always pass `--modes <mode>` matching the operator's requested mode. Auto-discovery is for `--mode both` only.** This removes the post-hoc `rm -rf <unused-mode>/` step entirely; without it you must delete the unused mode directory before rendering so the output tree matches the requested mode.
 
 **Skill obligations:**
 - Aggregate all findings into `<mode>/findings.json` for report rendering (validate-all does this automatically).
@@ -263,6 +336,12 @@ Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s 
   ```
 
   Same rule for `kubectl apply --dry-run=server`: pass repeated `-f` flags (or `-f <dir>`) in one invocation rather than shelling out per file.
+
+### Do NOT reduce reasoning effort globally
+
+**Do NOT reduce reasoning effort globally to speed up a run.** Phase 2–4 cost is OUTPUT tokens (YAML and prose written to files), not reasoning tokens. The observed 9-redundant-edit regression was an under-planning failure — less deliberation makes that class of defect *more* likely, and one re-edit plus its forced re-validation costs more than the planning that would have prevented it. Per-stage `effort: low` on mechanical authoring agents inside a fan-out is fine; session-wide reduction is the wrong lever. The lever that works is parallelism (see § Parallel Phase B and § Single-RGD fan-out).
+
+**Optimization target is WALL-CLOCK.** Token and dollar cost are not constraints for the authoring phases — guidance that trades money for latency should be adopted. Tokens matter only because output tokens are emitted serially within one context, so tokens-on-the-critical-path equals latency.
 
 ## Workflow
 
@@ -609,6 +688,19 @@ concurrently and writes the per-mode `findings.json` that `render-report` consum
 Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
 default. Reach for the three serial commands below **only** when `validate-all` reports an
 error and you need to isolate one validator's output, or when debugging a single file.
+
+**⚠️ `validate-all` runs EXACTLY ONCE per run, after all authoring is final.** If you find
+yourself re-running it because an artifact changed, the real defect is upstream — an
+artifact was written before its shape was settled (see § Parallel Phase B, "Decide the
+COMPLETE artifact shape before the first `Write`"). Re-running is acceptable only to
+confirm a fix for a `severity: error` finding.
+
+**The same once-only rule applies to per-agent gates inside a fan-out.** When an agent's gate
+returns zero `severity: error` findings, the agent is DONE — it must not re-read or re-inspect
+its file to "confirm." The validator's exit code is the confirmation. Re-running a passed gate
+is duplicated work on the critical path, and the habit is what escalates into a redundant full
+`validate-all` sweep. Observed: ~10s spent on a further `Bash` re-check after both gates had
+already passed clean.
 
 <details>
 <summary>Serial per-validator invocations (isolation/debugging only)</summary>
@@ -1077,6 +1169,19 @@ concurrently and writes the per-mode `findings.json` that `render-report` consum
 Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
 default. Reach for the three serial commands below **only** when `validate-all` reports an
 error and you need to isolate one validator's output, or when debugging a single file.
+
+**⚠️ `validate-all` runs EXACTLY ONCE per run, after all authoring is final.** If you find
+yourself re-running it because an artifact changed, the real defect is upstream — an
+artifact was written before its shape was settled (see § Parallel Phase B, "Decide the
+COMPLETE artifact shape before the first `Write`"). Re-running is acceptable only to
+confirm a fix for a `severity: error` finding.
+
+**The same once-only rule applies to per-agent gates inside a fan-out.** When an agent's gate
+returns zero `severity: error` findings, the agent is DONE — it must not re-read or re-inspect
+its file to "confirm." The validator's exit code is the confirmation. Re-running a passed gate
+is duplicated work on the critical path, and the habit is what escalates into a redundant full
+`validate-all` sweep. Observed: ~10s spent on a further `Bash` re-check after both gates had
+already passed clean.
 
 <details>
 <summary>Serial per-validator invocations (isolation/debugging only)</summary>
