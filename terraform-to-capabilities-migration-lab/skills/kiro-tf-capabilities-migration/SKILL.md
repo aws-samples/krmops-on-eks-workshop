@@ -93,7 +93,7 @@ That single command creates `scripts/.venv/`, installs Python dependencies, and 
 | `scripts/run crd-inventory` | Standalone CRD listing (called by discover, or ad-hoc if the cluster changed) | Phase 1; Phase 4 pre-validate if needed |
 | `scripts/run validate-manifest` | `kubectl apply --dry-run=server` per manifest + adoption-annotation invariants | Phase 4 (both paths) |
 | `scripts/run validate-cel` | CEL grammar check on `readyWhen` and `${…}` interpolations in RGDs | Phase 4 (both paths) |
-| `scripts/run validate-spec-fields` | Every spec field in the generated CRs **and** the ACK templates inside `rgd.yaml` must exist in the live CRD — catches fields that exist in the AWS SDK/Terraform but not the CRD (e.g. `skipFinalSnapshot`, `applyImmediately`). `--dry-run=server` cannot catch these: the API server silently **prunes** unknown fields | Phase 4 (both paths); also inline right after writing each CR in Phase 2 |
+| `scripts/run validate-spec-fields` | Every spec field in the generated CRs **and** the ACK templates inside `rgd.yaml` must exist in the live CRD — catches fields that exist in the AWS SDK/Terraform but not the CRD (e.g. `skipFinalSnapshot`, `applyImmediately`). **The `rgd.yaml` half is the part no other gate covers**: `resources[].template` is `x-kubernetes-preserve-unknown-fields: true`, so dry-run cannot see inside it. On `resources/*.yaml` the strict dry-run in `validate-manifest` already covers unknown fields | Phase 4 (both paths); also inline right after writing each CR in Phase 2 |
 | `scripts/run validate-all` | Parallel validate-spec-fields + validate-manifest + validate-cel across every `<mode>/<rgd>/` subtree; aggregates per-mode findings.json for render-report | Phase 4 (preferred over serial invocations — ~2.3× speedup measured) |
 | `scripts/run render-report` | Single-page HTML combining Phase_Checkpoint decisions + Cytoscape resource graph + migration report | Phase 4 (both paths) |
 | `scripts/run adopt` | Apply ACK CRs + poll `ACK.ResourceSynced=True` (verify adoption; **never** touches TF state) | Post-Phase 4, Adopt_Path only, opt-in |
@@ -179,7 +179,7 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 
   **⚠️ DO NOT BISECT RELEASE TAGS.** "When was this mechanism introduced?" is the wrong question and it is expensive: one run fetched `resource.go` across ~8 tags per service (v1.2.6, v1.3.0, v1.3.5, v1.3.10–13, v1.3.14, v1.3.15, v1.3.20, v1.4.0) to pin an adoption-by-annotation gate that the installed version — ACK 46.137.1-eks-1, a bundled managed capability — cleared by years. Every one of those fetches was answerable from a single pre-fan-out command.
 
-  The ONLY drift question worth asking is scoped to fields you actually intend to write: "is any field I will write absent from `cluster.ack_crds` but present upstream?" That is a diff against the live CRD list you already hold — usually zero fetches, never a tag walk. If the answer is yes, name the version that added it and OMIT the field (it would be silently pruned).
+  The ONLY drift question worth asking is scoped to fields you actually intend to write: "is any field I will write absent from `cluster.ack_crds` but present upstream?" That is a diff against the live CRD list you already hold — usually zero fetches, never a tag walk. If the answer is yes, name the version that added it and OMIT the field (writing it fails the strict dry-run in a CR, and wedges the RGD in a template).
 
   Apply the Phase-A defect test: if the installed version already clears a gate, establishing when the gate appeared changes no action, so do not research it.
 - Do **NOT** spend effort enumerating required/immutable/all-spec-field-names — the batched live-CRD read (see `§ Coordination hazards`) is authoritative and cheaper. Report only where upstream **disagrees** with the cluster.
@@ -502,7 +502,7 @@ Sections that are **binding rules, not suggestions**:
 | `naming_conventions.cr_metadata_name` | CR `metadata.name` = `<migration-name>-<kind-kebab-case>` — no exceptions |
 | `naming_conventions.resource_filename` | Filename = `<kind-kebab-case>.yaml` — no exceptions |
 | `consolidation_rules` | `aws_iam_role_policy_attachment` MUST populate `spec.policies` on the Role — never skip silently |
-| `pre_write_crd_field_check` | Every spec field MUST exist in the live CRD — enumerate it, don't infer from AWS docs (unknown fields are silently pruned) |
+| `pre_write_crd_field_check` | Every spec field MUST exist in the live CRD — enumerate it, don't infer from AWS docs. In an RGD template an unknown field is invisible to the API server and wedges the RGD at reconciliation |
 
 **Validation gate:** before writing any CR file, confirm adoption-fields for that Kind against `adoption_fields_by_kind`. If the Kind is absent from the section, web-verify the controller source before proceeding. Then run `./scripts/run validate-spec-fields <resources-dir>` to confirm every spec field exists in the live CRD.
 
@@ -1045,7 +1045,14 @@ kubectl get crd <plural>.<group> \
 
 Every spec field you write MUST appear in this output. AWS SDK/API parameters and Terraform lifecycle arguments are **not** the same set as ACK CRD spec fields, so reading the AWS service docs is not evidence that a field exists. If a TF attribute has no matching CRD field, **omit it** and record it in MIGRATION-NOTES.md under "Unsupported TF attributes".
 
-Why this is a hard gate: unknown fields in a CR are **silently pruned** by the API server, so `kubectl apply --dry-run=server` will not flag them (the value is just lost); inside an RGD template kro fails the type check with `schema not found for field <name>`. See `references/authoring-contract.json` → `pre_write_crd_field_check` for the rule and a (non-authoritative) snapshot of known gaps — the live enumeration above always wins.
+Why this is a hard gate — and where each validator actually bites:
+
+| Where the unknown field is | Caught by | Mechanism |
+|---|---|---|
+| a standalone CR under `resources/` | `validate-manifest` (and `validate-spec-fields`) | kubectl defaults to `--validate=true` = strict server-side field validation, so the API server returns `400` naming the field |
+| an ACK template inside `rgd.yaml` | **only** `validate-spec-fields` | `spec.resources[].template` is `x-kubernetes-preserve-unknown-fields: true` — the documented exception to validation and pruning. Dry-run passes; kro then rejects the RGD at reconciliation with `schema not found for field <name>` |
+
+The RGD half is the reason this gate is offline and mandatory: nothing the API server does will tell you about it. See `references/authoring-contract.json` → `pre_write_crd_field_check` for the rule and a (non-authoritative) snapshot of known gaps — the live enumeration above always wins.
 
 **⚠️ MANDATORY — write each CR file to disk immediately after authoring it:**
 
