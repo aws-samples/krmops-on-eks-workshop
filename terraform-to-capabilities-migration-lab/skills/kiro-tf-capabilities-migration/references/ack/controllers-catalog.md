@@ -2,40 +2,27 @@
 
 > Source: [ACK Services](https://aws-controllers-k8s.github.io/docs/services), [API Reference](https://aws-controllers-k8s.github.io/docs/api-reference)
 
-## ⚠️ CRITICAL: This Catalog Is a Snapshot — ALWAYS Web-Verify
+## ⚠️ This Catalog Is a Snapshot — resolve against the cluster first
 
-**This file is a convenience reference that may be INCOMPLETE or OUTDATED.** ACK controllers are released independently and new controllers are added frequently. The absence of a controller or CRD from this file does NOT mean it doesn't exist.
+**This file is a convenience reference that may be INCOMPLETE or OUTDATED.** ACK controllers are released independently, so the absence of a controller or CRD from this file does NOT mean it doesn't exist.
 
-**MANDATORY: For EVERY Terraform resource type being migrated, the agent MUST perform a web search to verify ACK controller existence — regardless of whether the resource appears in this catalog or not.**
+**Resolution order is `cluster.ack_crds` → this catalog → web, stopping at the first answer** (see `SKILL.md` § Phase 1 — Controller & Kind resolution). An installed CRD settles existence; a catalog gap is not evidence of absence, and neither is grounds for an open-ended search.
 
-### Web Verification Steps (REQUIRED for every resource type)
+### When the cluster and this catalog both come up empty
 
-1. **Search GitHub for the controller repo:**
-   - `https://github.com/aws-controllers-k8s/<service>-controller`
-   - Derive `<service>` from the AWS service name (e.g., `apigateway`, `lambda`, `s3`, `dynamodb`, `eks`, `rds`)
-   - If the obvious name doesn't work, try variations: `apigateway` vs `apigatewayv2`, `elasticloadbalancing` vs `elbv2`, `sqs`, `sns`, etc.
+One check, then decide:
 
-2. **Check the CRDs directory on GitHub:**
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
-   - This gives you the definitive list of supported Kinds and their field schemas
+- Fetch `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`. The filenames are the definitive Kind list. Derive `<service>` from the AWS service name; if the obvious name fails, try the documented variants (`apigateway` vs `apigatewayv2`, `elbv2` for load balancers) using the derivation table in `aws-to-ack-mappings.md`.
+- Kind present upstream but not installed → record it as unsupported **on this cluster** and note the controller that would provide it.
+- No such repo, or no matching Kind → unsupported.
 
-3. **Search the ACK documentation site:**
-   - `https://aws-controllers-k8s.github.io/community/reference/`
-   - `https://aws-controllers-k8s.github.io/docs/services/`
-
-4. **Search for blog posts and tutorials:**
-   - Search: `aws-controllers-k8s <service> controller`
-   - Search: `ACK <service> Kubernetes CRD`
-
-5. **If all searches return nothing**, THEN mark the resource as unsupported.
+Do **not** search blog posts, tutorials or the docs site to second-guess that result, and do **not** fetch a CRD schema here for field names — those come from the batched `kubectl get crd` read (`SKILL.md` § Coordination hazards).
 
 ### Why This Matters
 
-- Controllers graduate from Preview to GA frequently
-- New controllers are added without this file being updated
-- CRDs are added to existing controllers (new resource types supported)
-- Field names and schemas evolve between versions
-- **The cost of a web search is negligible compared to incorrectly classifying a resource as unsupported**
+- Controllers graduate from Preview to GA frequently, and CRDs are added to existing controllers without this file being updated — so a gap here is not proof of absence.
+- Field names and schemas evolve between versions, which is exactly why they are read from the live CRD rather than from this file or from upstream `main`.
+- Incorrectly classifying a resource as unsupported makes the migration incomplete. One bounded upstream check prevents that; an exhaustive search only adds wall-clock.
 
 ---
 

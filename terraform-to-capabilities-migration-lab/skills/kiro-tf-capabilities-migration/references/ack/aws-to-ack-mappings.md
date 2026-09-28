@@ -2,13 +2,15 @@
 
 > Source: [ACK API Reference](https://aws-controllers-k8s.github.io/docs/api-reference), [ACK Services](https://aws-controllers-k8s.github.io/docs/services)
 
-## ⚠️ CRITICAL: This Mapping Table Is a Snapshot — ALWAYS Web-Verify
+## ⚠️ This Mapping Table Is a Snapshot — resolve against the cluster first
 
-**This file is a convenience reference that may be INCOMPLETE or OUTDATED.** The absence of a Terraform resource type from this table does NOT mean there is no ACK equivalent. ACK controllers and CRDs are added and updated frequently.
+**This file is a convenience reference that may be INCOMPLETE or OUTDATED.** The absence of a Terraform resource type from this table does NOT mean there is no ACK equivalent.
 
-**MANDATORY: For EVERY Terraform resource type being migrated, the agent MUST perform a web search to verify the ACK mapping — EVEN IF the resource already appears in this table (field names may have changed) and ESPECIALLY IF it does NOT appear here.**
+**Resolution order is `cluster.ack_crds` → this table → web, stopping at the first answer** (see `SKILL.md` § Phase 1 — Controller & Kind resolution). If the Kind is installed on the cluster, existence and field names are settled there and this table needs no web confirmation — the installed controller version is what reconciles the CR, and upstream `main` can disagree with it. Do **not** web-verify a mapping that the cluster already resolved.
 
-### Web Verification Steps (REQUIRED for every resource type)
+The web is needed for four things only: a Kind absent from the cluster, an `adoption-fields` lookup key missing from `authoring-contract.json`, an unlisted consolidation, and upstream-vs-cluster version drift on a field you intend to write.
+
+### Service-name derivation (local knowledge — not a search task)
 
 1. **Derive the AWS service name** from the TF resource type prefix:
    - `aws_s3_*` → service = `s3`

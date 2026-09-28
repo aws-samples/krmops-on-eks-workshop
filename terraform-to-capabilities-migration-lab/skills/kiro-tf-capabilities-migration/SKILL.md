@@ -1383,9 +1383,9 @@ These are **potential future additions** (or a separate skill), not removed capa
 
 See `references/known-limitations.md` for detailed documentation of these future-extension paths.
 
-## Mandatory Web Verification (All Phases)
+## Web Verification — scoped to what the cluster cannot answer
 
-**Before generating ANY output (ACK CRs, RGD templates, or documentation), the agent MUST verify each resource's CRD schema against live documentation.** Local reference files (`controllers-catalog.md`, `aws-to-ack-mappings.md`) provide initial mappings, but they may be outdated. The agent must:
+**The live cluster is the authority on CRD schemas. The web is the authority on the four things a CRD does not contain.** Read the division of labour below and stay inside it: every web call spent re-deriving a field name, a required set, an immutability marker or a status shape is pure latency, because one batched `kubectl get crd` already returned all of it.
 
 ### Division of labour — what the web is FOR (and what it is not)
 
@@ -1409,28 +1409,26 @@ Two measured examples of why the web half is non-negotiable — both invisible t
 - IAM Policy is adoptable **only by `arn`**; `GetPolicy` has no name lookup, so `{"name":…}` sits in `NotFound` forever.
 - `secretsmanager/Secret.spec.recoveryWindowInDays` exists upstream (≥ v1.6.0) but not on older clusters — writing it means silent pruning.
 
-### Phase 1 — Controller & CRD Existence Verification
+### Phase 1 — Controller & Kind resolution (cluster first, web on miss)
 
-For **every** Terraform resource type discovered — whether or not it appears in `controllers-catalog.md` or `aws-to-ack-mappings.md`:
+Resolve each TF resource type in this order and **STOP at the first step that answers**. Do not continue to a later step once resolved.
 
-1. **Derive the service name** from the TF resource type prefix (e.g., `aws_api_gateway_*` → `apigateway`, `aws_lambda_*` → `lambda`, `aws_dynamodb_*` → `dynamodb`). Note that TF naming and ACK controller naming may differ — try variations.
+1. **`cluster.ack_crds` (already in `migrate-set.json`, zero cost).** If the Kind is installed, existence is settled — the installed CRD is what will reconcile the CR, and an upstream repo listing cannot override that. Take the group, Kind, plural and served version from here.
 
-2. **Search GitHub for the controller repo** — try ALL of the following until you find it or exhaust options:
-   - `https://github.com/aws-controllers-k8s/<service>-controller` (direct URL)
-   - Web search: `github.com aws-controllers-k8s <service>-controller`
-   - Web search: `aws-controllers-k8s <TF resource prefix without aws_> controller`
-   - If a service has v1/v2 variants (like API Gateway), search for BOTH: `apigateway-controller` AND `apigatewayv2-controller`
+2. **`authoring-contract.json` → `adoption_fields_by_kind` (zero cost).** If the Kind is present, its adoption-fields lookup key is settled — **do not web-verify it.** Absence from this table is the only trigger for step 4.
 
-3. **Check the CRD directory** — once you find the controller repo, fetch:
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
-   - The CRD filenames reveal every supported Kind (e.g., `apigateway.services.k8s.aws_restapis.yaml` → Kind = `RestAPI`)
+3. **`references/known-limitations.md` + `consolidation_rules` in the contract (zero cost).** Covers the TF types ACK folds into a parent Kind (`aws_iam_role_policy_attachment`, `aws_security_group_rule`, `aws_secretsmanager_secret_version`, route-table associations, …). A type listed here is resolved — do not enumerate a repo to reconfirm it.
 
-4. **Do NOT trust local references alone:**
-   - If `aws-to-ack-mappings.md` says "no ACK equivalent" → **STILL web-search** (the mapping may be outdated)
-   - If `controllers-catalog.md` doesn't list a controller → **STILL web-search** (the catalog may be incomplete)
-   - If the local reference says "Alpha" or "unsupported" but the web shows GA → **trust the web**
+4. **Web, only for what steps 1–3 left open.** Exactly three questions reach this step:
+   - the Kind is **not** installed on the cluster → does a controller exist upstream at all? One fetch of `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`; the filenames reveal every Kind. If a service has v1/v2 variants (API Gateway), check both.
+   - the Kind is installed but **absent from `adoption_fields_by_kind`** → read its lookup key from `pkg/resource/<resource>/resource.go` → `PopulateResourceFromAnnotation`.
+   - a TF type matches **no** Kind and is **not** in the consolidation tables → confirm consolidation from the `helm/crds` filenames plus the `pkg/resource/` package list, per the stop line in § Parallel Phase A.
 
-5. **Only after exhausting all search strategies**, mark a resource as genuinely unsupported.
+   Nothing else goes to the web. In particular: do **not** fetch a CRD schema to learn field names, required fields, immutability or status shapes — those come from the batched `kubectl get crd` read (§ Coordination hazards).
+
+5. **Mark unsupported** when step 4's first question comes back negative — no controller upstream, or no Kind for this resource.
+
+**Service-name derivation** is local knowledge, not a search task. Use the pitfalls table below before guessing.
 
 **Common service name derivation pitfalls:**
 | TF prefix | ❌ Wrong guess | ✅ Correct controller |
@@ -1442,32 +1440,30 @@ For **every** Terraform resource type discovered — whether or not it appears i
 | `aws_cloudwatch_log_*` | `cloudwatch-controller` | `cloudwatchlogs-controller` |
 | `aws_sfn_*` | `stepfunctions-controller` | `sfn-controller` |
 
-### Phase 2 — CRD Field Schema Verification
+### Phase 2 — CRD field schemas come from the cluster, NOT the web
 
-For **every** ACK CR being generated:
+**Do not fetch a CRD schema from GitHub or from the ACK reference site.** One batched `kubectl get crd … -o json` (§ Coordination hazards) returns spec properties, `required`, `x-kubernetes-validations` (immutability) and status properties for every Kind at once, from the controller version that will actually reconcile the CR. Fetching the same schema from `main` is slower and can disagree with the cluster.
 
-1. **Fetch the CRD spec field schema** — search for the resource's API reference or CRD YAML at:
-   - `https://aws-controllers-k8s.github.io/community/reference/<service>/v1alpha1/<kind>/`
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
-2. **Verify required fields** — do NOT guess field names from Terraform attribute names. ACK field names follow the AWS SDK Go naming convention (camelCase), which may differ from Terraform's snake_case attribute names.
-3. **Verify field nesting** — some Terraform top-level attributes map to nested ACK spec fields (e.g., `source_code_hash` is not an ACK field; Lambda code is under `spec.code.s3Bucket` + `spec.code.s3Key`).
-4. **Check for cross-resource references** — ACK CRDs often support `*Ref` fields (e.g., `roleRef` instead of `role`) for referencing other ACK-managed resources within the same namespace.
+What still applies when reading that local output:
+
+1. **Never guess field names from Terraform attribute names.** ACK follows AWS SDK Go camelCase; TF uses snake_case. Take the name from the enumerated CRD keys.
+2. **Watch for nesting.** Some TF top-level attributes map to nested ACK spec fields (`source_code_hash` is not an ACK field; Lambda code lives under `spec.code.s3Bucket` + `spec.code.s3Key`).
+3. **Check for `*Ref` fields.** ACK CRDs often expose `roleRef` alongside `role` for referencing other ACK-managed resources in the same namespace.
+
+`./scripts/run validate-spec-fields` is the gate for all three — it checks every written key against the live CRD and exits non-zero on an unknown field.
 
 ### Phase 3 — KRO Syntax Verification
 
 1. **Verify KRO version-dependent syntax** — if `forEach`, `omit()`, or other evolving primitives are used, check the latest KRO docs at `https://kro.run/docs/concepts/rgd/`.
 2. **Verify CEL expression patterns** — especially for status field access (`?` operator, `.orValue()` patterns).
 
-### Why This Matters — Non-Negotiable
+### Why This Matters
 
-- **NEVER classify a resource as "no ACK equivalent" without exhausting all web search strategies first**
-- ACK controllers are independently versioned and graduate from Preview to GA frequently
-- New controllers and CRDs are added regularly without local reference files being updated
-- CRD schemas evolve between controller versions (fields added, renamed, deprecated)
-- The `controllers-catalog.md` and `aws-to-ack-mappings.md` are convenience snapshots that WILL be incomplete
-- Generating CRs with incorrect field names results in API server validation errors at apply time
-- Incorrectly marking a resource as unsupported means the migration is incomplete
-- **The cost of a few web searches is negligible compared to producing an incomplete or invalid migration**
+- **Do not mark a resource unsupported on the strength of a local reference alone.** `controllers-catalog.md` and `aws-to-ack-mappings.md` are convenience snapshots and will be incomplete. But "not in the snapshot" is answered by `cluster.ack_crds` first — one web check (Phase 1 step 4) settles it, not an open-ended search.
+- Incorrectly marking a resource as unsupported means the migration is incomplete.
+- Generating CRs with incorrect field names produces API server validation errors, or silent pruning — which is why `validate-spec-fields` gates every written key against the live CRD.
+- ACK controllers are independently versioned, so upstream and this cluster can disagree. **The cluster wins** for anything it can answer; the web only covers the four questions in the division of labour above.
+- **Web calls are not free.** Each one is wall-clock on the critical path. Bounded verification that answers the question beats exhaustive verification that re-answers it — if a step above already resolved a fact, stop.
 
 ### Verification Failure Handling
 
