@@ -235,7 +235,23 @@ def check_canonical_schema_fields(doc: dict, file_str: str) -> list[dict]:
           canon = json.loads(CONTRACT.read_text())["naming_conventions"][
               "canonical_schema_spec_field_names"
           ]
-      except Exception:
+      except Exception as e:
+          # Never return silently: an empty finding list reads as "clean" to the
+          # caller, so a moved/renamed contract key would disable this check
+          # invisibly and the run would still report green.
+          findings.append({
+              "severity": "warning",
+              "file": file_str,
+              "kind": "ResourceGraphDefinition",
+              "name": (doc.get("metadata") or {}).get("name", "?"),
+              "field": "",
+              "message": (
+                  "canonical schema-field check did NOT run: could not read "
+                  f"naming_conventions.canonical_schema_spec_field_names from {CONTRACT.name} "
+                  f"({type(e).__name__}: {str(e).splitlines()[0][:150] if str(e) else 'no detail'}). "
+                  "Schema spec field names were NOT verified."
+              ),
+          })
           return findings
 
       allowed = {v for k, v in canon.items() if not k.startswith("_")}
