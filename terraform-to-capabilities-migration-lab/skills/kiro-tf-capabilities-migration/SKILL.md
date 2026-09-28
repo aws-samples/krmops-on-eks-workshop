@@ -442,7 +442,7 @@ Then reason over the emitted JSON:
 
 1. Verify version 4 was parsed (`source.state_location` was set and `resources[]` is populated).
 2. For each resource in `migrate-set.json`, look up its Terraform type against `cluster.ack_crds`. The mapping is derived at runtime — an ACK Kind exists iff a CRD in `*.services.k8s.aws` with that Kind is installed. `aws-to-ack-mappings.md` is a HINT only; the live CRD list is authoritative.
-3. **🌐 Web-verify** each resource's ACK controller status per [Mandatory Web Verification](#mandatory-web-verification-all-phases) — especially for resources whose CRD is not in the current cluster (may be GA on another cluster).
+3. **Only if step 2 left the type unresolved**, follow the resolution chain in [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer) — it stops at the first step that answers. A Kind present in `cluster.ack_crds` is already resolved; do not web-verify it.
 4. Identify resources that ACK consolidates into parent CRs (e.g., `aws_iam_role_policy_attachment` → merged into Role).
 5. The cross-reference and dependency graphs are already in `migrate-set.cross_refs`; use them for RGD `readyWhen` ordering.
 6. Document any resources without an ACK Kind installed in the target cluster.
@@ -517,7 +517,7 @@ For each adoptable resource, generate an ACK CR. The **`adoption-policy`** value
 
 Rules for `adoption-policy: adopt` (the Adopt_Path default):
 
-- **🌐 Web-verify the CRD field schema before generating** — fetch the ACK API reference or CRD YAML to confirm exact field names, required fields, and nesting structure (see [Mandatory Web Verification](#mandatory-web-verification-all-phases)). Do NOT guess field names from Terraform attribute names.
+- **Read field names, required fields and nesting from the batched local CRD read** (`/tmp/crds.json`, see [§ Coordination hazards](#coordination-hazards)). Do NOT fetch a CRD schema from GitHub or the ACK reference site, and do NOT guess field names from Terraform attribute names — see [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer).
 - Use `services.k8s.aws/adoption-policy: adopt`.
 - Use `services.k8s.aws/adoption-fields` with the lookup JSON per resource type (see the lookup table in `adoption-patterns.md`).
 - **Ideal is `spec: {}`** per the doc — ACK will populate spec from live AWS state after adoption. This is the semantic contract.
@@ -1007,7 +1007,7 @@ Then reason over the emitted JSON:
 
 1. Verify `hcl.resources[]`, `hcl.variables[]`, `hcl.outputs[]`, `hcl.locals`, and `hcl.data[]` were populated.
 2. Map each `hcl.resources[]` type against `cluster.ack_crds` (the live CRD inventory is authoritative; `aws-to-ack-mappings.md` is a hint only).
-3. **🌐 Web-verify** each resource's ACK controller status per [Mandatory Web Verification](#mandatory-web-verification-all-phases).
+3. **Only for types step 2 left unresolved**, follow the resolution chain in [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer).
 4. Record resource types with no ACK equivalent for the operator summary.
 5. Identify resources that ACK consolidates into parent CRs.
 6. The HCL-derived dependency graph is already in `migrate-set.cross_refs` (entries with `"source": "hcl"`).
@@ -1057,7 +1057,7 @@ Do NOT accumulate CR content in memory and write everything at Phase 4. Write ea
 
 For each resource with an ACK equivalent, generate a full-spec ACK CR:
 - **Write `resources/<kind-kebab-case>.yaml` to disk immediately after authoring each CR**
-- **🌐 Web-verify the CRD field schema before generating** — fetch the ACK API reference or CRD YAML to confirm exact field names, required fields, and nesting structure (see [Mandatory Web Verification](#mandatory-web-verification-all-phases)). Do NOT guess field names from Terraform attribute names.
+- **Read field names, required fields and nesting from the batched local CRD read** (`/tmp/crds.json`, see [§ Coordination hazards](#coordination-hazards)). Do NOT fetch a CRD schema from GitHub or the ACK reference site, and do NOT guess field names from Terraform attribute names — see [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer).
 - Populate the full resource spec from Terraform variables (Req 4.4)
 - Do NOT include any ACK adoption annotations (`adoption-policy`, `adoption-fields`, `deletion-policy`)
 - Set `services.k8s.aws/region` for regional resources
@@ -1467,9 +1467,9 @@ What still applies when reading that local output:
 
 ### Verification Failure Handling
 
-- If a web search returns no results for a specific CRD field schema → fall back to the AWS API reference for that service (CreateFunction API → maps to ACK Function spec)
-- If verification reveals a field name differs from what the local reference suggests → use the web-verified name and document the discrepancy
-- If verification is impossible (network issues, page unavailable) → proceed with local references but add a `# VERIFY: field names not web-verified` comment on affected resources
+- **A CRD field schema is never a web question.** If a field name is unclear, re-read `/tmp/crds.json`. If the Kind is absent from it, the controller is not installed — that is a classification answer, not a cue to search.
+- If a local reference disagrees with the live CRD → the live CRD wins. Record the discrepancy in `MIGRATION-NOTES.md`; do not research which is "really" right.
+- If the one web question a step legitimately needs (adoption-fields key, consolidation, upstream-only field) cannot be answered — network down, page unavailable — record it in `MIGRATION-NOTES.md` and continue. Do not retry with different search phrasings.
 
 ---
 

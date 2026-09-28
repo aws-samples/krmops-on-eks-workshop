@@ -42,10 +42,9 @@ The web is needed for four things only: a Kind absent from the cluster, an `adop
    - Search: `aws-controllers-k8s <service>-controller <Kind> CRD`
    - Search: `ACK <Kind> apiVersion spec fields`
 
-4. **Verify CRD field names** — ACK uses camelCase (AWS SDK Go naming), which differs from Terraform's snake_case. NEVER guess field names from TF attribute names. Always check the CRD YAML at:
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
+4. **Field names come from the live CRD, not from here and not from GitHub.** ACK uses camelCase (AWS SDK Go naming), which differs from Terraform's snake_case, so never guess from TF attribute names — but read the real names from the batched `kubectl get crd` output the skill already holds (`/tmp/crds.json`). Fetching `helm/crds` for a Kind that is installed on the cluster adds latency and can disagree with the version that will reconcile the CR.
 
-5. **If no controller exists after exhaustive search**, THEN mark as unsupported.
+5. **If the single listing in step 2 shows no matching Kind**, mark as unsupported. One bounded check, not a search loop.
 
 ### Common Pitfalls (Why Web Search Is Non-Negotiable)
 
@@ -63,7 +62,7 @@ The web is needed for four things only: a Kind absent from the cluster, an `adop
 
 When parsing TF state or HCL, each resource has a `type` field (e.g., `aws_s3_bucket`).
 Use this table as a **starting point** to map it to the ACK apiVersion, Kind, and adoption lookup field.
-**Then web-verify the CRD schema before generating any YAML.**
+**Then read the real spec field names from the batched live-CRD output (`/tmp/crds.json`) before generating any YAML** — not from this table, and not from GitHub.
 
 ## Mapping Table
 
@@ -376,8 +375,9 @@ All identity-based permissions use the ACK IAM controller:
 ## Known CRD Field Pitfalls (Verified via Live Testing)
 
 > These are field name/type mismatches discovered during live cluster testing.
-> They demonstrate why **web-verifying CRD schemas is mandatory** — Terraform
-> attribute names do NOT reliably predict ACK CRD field names or types.
+> They demonstrate why **enumerating the live CRD is mandatory** — Terraform
+> attribute names do NOT reliably predict ACK CRD field names or types. The fix is
+> one batched `kubectl get crd` read, not a web search.
 
 ### IAM Role: `policies` NOT `managedPolicies`
 
