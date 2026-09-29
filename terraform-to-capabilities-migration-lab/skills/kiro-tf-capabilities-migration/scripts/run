@@ -6,7 +6,7 @@
 #   ./scripts/run <subcommand> [args...]
 #
 # Subcommands map 1:1 to the .py files in this directory:
-#   discover, crd-inventory, validate-manifest, validate-cel,
+#   discover, crd-inventory, emit-interface, validate-manifest, validate-cel,
 #   validate-spec-fields, validate-all, render-report, adopt
 
 set -euo pipefail
@@ -30,10 +30,13 @@ Subcommands:
   discover           Parse tfstate + HCL + live-cluster CRDs -> migrate-set.json
   crd-inventory      List ACK CRDs installed on the target cluster
                      (--schema adds required/immutable/spec/status per Kind; cached)
+  emit-interface     Emit the derived half of the shared authoring interface
+                     (per-resource tfstate values, live-CRD schemas, mapping table)
   validate-manifest  kubectl dry-run + adoption-annotation invariants
   validate-cel       CEL grammar check on RGD readyWhen / interpolations
   validate-spec-fields  Check every spec field in generated CRs/RGD templates exists in the live CRD
   validate-all       Parallel validate-spec-fields + validate-manifest + validate-cel across all RGDs
+                     (--reuse-gates skips a validator whose inline gate output is still fresh)
   render-report      Emit the single-page HTML report
                      (--notes-out --mode also renders MIGRATION-NOTES.md)
   adopt              Apply ACK CRs + poll ACK.ResourceSynced=True (TF state untouched)
@@ -45,7 +48,7 @@ fi
 
 cmd="$1"; shift
 case "${cmd}" in
-  discover|crd-inventory|validate-manifest|validate-cel|validate-spec-fields|validate-all|render-report|adopt)
+  discover|crd-inventory|emit-interface|validate-manifest|validate-cel|validate-spec-fields|validate-all|render-report|adopt)
     ;;
   *)
     echo "error: unknown subcommand '${cmd}'" >&2

@@ -90,7 +90,8 @@ That single command creates `scripts/.venv/`, installs Python dependencies, and 
 | Subcommand | Purpose | Called at |
 |---|---|---|
 | `scripts/run discover` | Parse tfstate + HCL + live-cluster CRD inventory → `migrate-set.json` | Phase 1 (both paths) |
-| `scripts/run crd-inventory` | Standalone CRD listing (called by discover, or ad-hoc if the cluster changed) | Phase 1; Phase 4 pre-validate if needed |
+| `scripts/run crd-inventory` | Standalone CRD listing (called by discover, or ad-hoc if the cluster changed); `--schema` adds required/immutable/spec/status per Kind | Phase 1; Phase 4 pre-validate if needed |
+| `scripts/run emit-interface` | Derived half of `shared-interface.md` — per-resource tfstate values, live-CRD schemas, verified mapping table. The skill appends only its decisions | Phase 3, before the authoring fan-out |
 | `scripts/run validate-manifest` | `kubectl apply --dry-run=server` per manifest + adoption-annotation invariants | Phase 4 (both paths) |
 | `scripts/run validate-cel` | CEL grammar check on `readyWhen` and `${…}` interpolations in RGDs | Phase 4 (both paths) |
 | `scripts/run validate-spec-fields` | Every spec field in the generated CRs **and** the ACK templates inside `rgd.yaml` must exist in the live CRD — catches fields that exist in the AWS SDK/Terraform but not the CRD (e.g. `skipFinalSnapshot`, `applyImmediately`). **The `rgd.yaml` half is the part no other gate covers**: `resources[].template` is `x-kubernetes-preserve-unknown-fields: true`, so dry-run cannot see inside it. On `resources/*.yaml` the strict dry-run in `validate-manifest` already covers unknown fields | Phase 4 (both paths); also inline right after writing each CR in Phase 2 |
@@ -209,7 +210,7 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 **Each subagent's job (per RGD, per mode):**
 - Receive: the verified mapping table (from Phase A), the list of resource addresses in this group, the resolved TF attributes for each, and the mode (adopt or create).
 - Author `<rgd-name>/rgd.yaml` + `<rgd-name>/instance.yaml` + `<rgd-name>/resources/*.yaml`.
-- Run its own tight grounding loop: `./scripts/run validate-spec-fields <rgd>/` + `./scripts/run validate-manifest --dir <rgd>/resources --mode <mode>` + `./scripts/run validate-cel <rgd>/rgd.yaml`. Fix findings and re-run until clean or 3 attempts.
+- Run its own tight grounding loop, writing each result to `<rgd>/.gates/{manifest,cel,spec}.json` so the Phase 4 sweep can reuse it (see § Single-RGD fan-out for the exact commands). Fix findings and re-run until clean or 3 attempts.
 - Return `{rgd_name, files_written: [...], findings_summary: {errors, warnings}, attempts_needed: int}`.
 
 **Skill obligations:**
@@ -232,9 +233,23 @@ When the Phase 1 grouping yields ONE resource group, the per-RGD unit gives no p
 
 **Prerequisite — publish the shared interface FIRST, in the main context, and write it to ONE FILE.** Before spawning, the skill MUST fix the interface and pass every agent its **path** (e.g. `/tmp/shared-interface.md`). Do NOT inline it into each prompt — that re-emits the same bytes once per agent on the main thread's critical path.
 
-The file MUST carry: (a) the final `schema.spec` field names (the canonical names from `authoring-contract.json` → `naming_conventions.canonical_schema_spec_field_names`, plus any added for CRD-required minima); (b) the resource `id` per Kind, alongside its filename and CR `metadata.name`; (c) the run parameters — RGD name, generated Kind, namespace and mode; (d) the verified Phase A mapping table including adoption-fields keys; (e) the live-CRD required/immutable/absent-field lists already read in Phase 1, plus any tag-shape exceptions; (f) the dependency-edge table; (g) the exact per-resource values from tfstate; (h) `references/authoring-contract.json` (by path is sufficient). Without this, agents pick divergent schema field names and the assembled RGD does not typecheck.
+**⚠️ Generate the derived half; author only the decisions.** Do NOT transcribe tfstate values or CRD schemas by hand — that was ~12 of the file's ~16 KB, emitted serially while every agent waited:
 
-Measured: one 15.9 KB interface file drove 6 concurrent agents to **zero schema drift** — all 15 `schema.spec` field names agreed, all 7 resource ids agreed, the instance matched the schema exactly, and every agent passed its gate on the first attempt.
+```bash
+./scripts/run crd-inventory --schema --out /tmp/crds.json
+./scripts/run emit-interface \
+  --migrate-set /tmp/migrate-set.json \
+  --crds /tmp/crds.json \
+  --out /tmp/shared-interface.md
+```
+
+That emits **(d)** the verified mapping table with adoption-fields keys, **(e)** the live-CRD required/immutable/spec/status lists plus known shape exceptions, and **(g)** the per-resource tfstate values with `discover`'s redactions preserved.
+
+**Then append the decisions, which are yours and are deliberately not generated:** (a) the final `schema.spec` field names (canonical names from `authoring-contract.json` → `naming_conventions.canonical_schema_spec_field_names`, plus any added for CRD-required minima); (b) the resource `id` per Kind with its filename and CR `metadata.name`; (c) the run parameters — RGD name, generated Kind, namespace and mode; (f) the dependency-edge table; plus the literal-vs-CEL assignment per field. `references/authoring-contract.json` goes by path (h).
+
+Without the decisions appended, agents pick divergent schema field names and the assembled RGD does not typecheck. If `--crds` is omitted the CRD section says **NOT AVAILABLE** rather than appearing empty — an agent that cannot see the required-field list must know it is missing, not infer there are none.
+
+Measured: one 15.9 KB interface file drove 6 concurrent agents to **zero schema drift** — all 15 `schema.spec` field names agreed, all 7 resource ids agreed, the instance matched the schema exactly, and every agent passed its gate on the first attempt. Generating the derived half preserves that content; it only stops retyping it.
 
 **⚠️ ONE authoring wave, never two. Every agent below is spawned in a SINGLE message.** A second
 wave is legitimate only if an agent needs an input that does not exist until a first-wave agent
@@ -250,6 +265,19 @@ spawned and awaited, then the rest were spawned, though they needed nothing from
 **`MIGRATION-NOTES.md` is NOT in this fan-out.** It is generated from a template by
 `scripts/run render-report --notes-out` at the end of Phase 4 — see § Phase 4. Do not spawn an agent
 for it, and do not hand-author it.
+
+**⚠️ Every inline gate MUST write its findings to `<rgd-dir>/.gates/<name>.json`** so the Phase 4 sweep can reuse them instead of re-running identical work. The agent's own gate commands become:
+
+```bash
+mkdir -p <rgd-dir>/.gates
+./scripts/run validate-manifest --dir <rgd-dir>/resources --mode <mode> --format json > <rgd-dir>/.gates/manifest.json
+./scripts/run validate-cel <rgd-dir>/rgd.yaml --format json                            > <rgd-dir>/.gates/cel.json
+./scripts/run validate-spec-fields <rgd-dir> --format json                             > <rgd-dir>/.gates/spec.json
+```
+
+The names `manifest`, `cel` and `spec` are fixed — `validate-all --reuse-gates` looks for exactly those. **The agent still reads its own output and still fixes `severity: error` findings**; writing the file is additional, not a substitute for acting on it.
+
+Reuse is safe because staleness is checked, not assumed: `validate-all` compares each cached file's mtime against the newest YAML the gate covers and re-runs the validator when the artifacts are newer. So an agent that edits a file after its gate ran does not get a false pass — it gets the gate re-run, which is the correct outcome and another reason not to re-edit a written file.
 
 **Hand every authoring agent its gate as a literal, copy-paste-ready command line.** Agents MUST NOT read helper-script source to discover invocation syntax — if a fan-out prompt does not already contain the exact command, that is a defect in the prompt, not a research task for the agent. Reading `scripts/*.py` is warranted ONLY when authoring a JSON input file that a script consumes (e.g. `decisions.json` for `render_report.py`), never to run a validator. Observed cost of getting this wrong: ~8s of one agent's critical path spent reading `validate_cel.py` and `validate_spec_fields.py` while its prompt already contained both commands.
 
@@ -279,12 +307,21 @@ Per-stage effort tuning is appropriate here: `effort: low` for the mechanical pe
 ./scripts/run validate-all \
   --output migration-output/ \
   --context $KUBECTL_CONTEXT \
-  --workers 8
+  --workers 8 \
+  --reuse-gates
 ```
 
 `validate-all` auto-discovers every `<mode>/<rgd>/` subtree and runs validate-spec-fields + validate-manifest + validate-cel across all `(mode, rgd)` tuples concurrently via a thread pool. Aggregates findings into `<mode>/findings.json` ready for `render-report`. Exit code non-zero iff any tuple has a `severity: error` finding. **Use this instead of orchestrating separate subagents unless you specifically want per-RGD subagent conversation state.**
 
-Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s parallel). Projected on 3-RGD × 2-mode (6 tuples): ~4-5× speedup, bounded by the slowest tuple.
+**`--reuse-gates` is the default invocation.** A validator whose inline-gate output under
+`<mode>/<rgd>/.gates/` is newer than every YAML it covers is not re-run; its findings are reused and
+still aggregated. On a single-RGD stack every gate hits, so the sweep collapses to aggregation plus
+`instance.yaml` — the two jobs no inline gate covers. A cache older than the artifacts is ignored and
+the validator runs, so this cannot mask a late edit. Drop to `--no-reuse-gates` when you want an
+independent second opinion, e.g. after changing the cluster context.
+
+Note the three validators run serially **within** one tuple, so the parallelism below only pays
+across tuples: a one-RGD run gets its saving from `--reuse-gates`, not from `--workers`.
 
 **Housekeeping — always scope the sweep to the requested mode.** `validate-all` auto-discovers `<mode>/` subtrees and writes a `findings.json` for **every** mode directory it creates, including an empty `create/findings.json` on an adopt-only run. **Always pass `--modes <mode>` matching the operator's requested mode. Auto-discovery is for `--mode both` only.** This removes the post-hoc `rm -rf <unused-mode>/` step entirely; without it you must delete the unused mode directory before rendering so the output tree matches the requested mode.
 
@@ -697,7 +734,8 @@ concurrently and writes the per-mode `findings.json` that `render-report` consum
 ./scripts/run validate-all \
   --output <output-dir>/ \
   --context $KUBECTL_CONTEXT \
-  --workers 8
+  --workers 8 \
+  --reuse-gates
 ```
 
 Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
@@ -1177,7 +1215,8 @@ concurrently and writes the per-mode `findings.json` that `render-report` consum
 ./scripts/run validate-all \
   --output <output-dir>/ \
   --context $KUBECTL_CONTEXT \
-  --workers 8
+  --workers 8 \
+  --reuse-gates
 ```
 
 Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
@@ -1435,7 +1474,16 @@ Resolve each TF resource type in this order and **STOP at the first step that an
 
 1. **`cluster.ack_crds` (already in `migrate-set.json`, zero cost).** If the Kind is installed, existence is settled — the installed CRD is what will reconcile the CR, and an upstream repo listing cannot override that. Take the group, Kind, plural and served version from here.
 
-2. **`authoring-contract.json` → `adoption_fields_by_kind` (zero cost).** If the Kind is present, its adoption-fields lookup key is settled — **do not web-verify it.** Absence from this table is the only trigger for step 4.
+2. **`authoring-contract.json` → `adoption_fields_by_kind`, checked against its version stamp (zero cost).** Read the installed controller line ONCE, before any fan-out, per `adoption_fields_verified_against._how_to_read_installed_version`. Then per Kind:
+
+   | Installed vs. `adoption_fields_verified_against[<group>/<Kind>]` | Action |
+   |---|---|
+   | satisfies the stamp | the cached key is **provably valid** — do NOT web-verify it |
+   | below the stamp, or the Kind is absent from the table | web-verify **that one service** (step 4) |
+
+   A bundled ACK capability reports a platform version, not per-service tags; `46.x` or above satisfies every `ack-runtime` stamp in the table. **Never** bisect release tags — if the installed version already clears the gate, establishing when the gate appeared changes no action.
+
+   This step exists because an unstamped cache is unfalsifiable: a previous run spawned 5 web-verification agents (~40s) to re-derive keys the contract already stated verbatim, IAM-Policy-arn-only among them. The stamp is what makes "skip the web" a checkable claim rather than a request for trust.
 
 3. **`references/known-limitations.md` + `consolidation_rules` in the contract (zero cost).** Covers the TF types ACK folds into a parent Kind (`aws_iam_role_policy_attachment`, `aws_security_group_rule`, `aws_secretsmanager_secret_version`, route-table associations, …). A type listed here is resolved — do not enumerate a repo to reconfirm it.
 

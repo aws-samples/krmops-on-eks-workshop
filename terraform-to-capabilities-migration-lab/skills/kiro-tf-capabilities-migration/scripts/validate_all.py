@@ -102,10 +102,61 @@ def _run_json(args: list[str]) -> tuple[list, int]:
     return findings, proc.returncode
 
 
-def validate_tuple(mode: str, rgd: str, output_dir: Path, context: str | None, kubeconfig: str | None) -> TupleResult:
+GATE_DIR_NAME = ".gates"
+# Gate name -> the path whose mtime decides whether that gate is still valid.
+GATE_SUBJECTS = {"manifest": "resources", "cel": "rgd.yaml", "spec": "."}
+
+
+def _newest_mtime(path: Path) -> float:
+    """Newest mtime under path (or of path itself). -inf when nothing is there."""
+    if path.is_file():
+        return path.stat().st_mtime
+    if not path.is_dir():
+        return float("-inf")
+    times = [
+        p.stat().st_mtime
+        for ext in ("*.yaml", "*.yml")
+        for p in path.rglob(ext)
+        if GATE_DIR_NAME not in p.parts
+    ]
+    return max(times) if times else float("-inf")
+
+
+def _read_cached_gate(rgd_dir: Path, gate: str) -> list | None:
+    """Findings written by an inline per-agent gate, or None if unusable.
+
+    Reuse is only sound while no artifact the gate covers has changed since it
+    ran. A stale cache is silently discarded and the gate re-runs — the failure
+    mode of reusing one is a validated-looking tuple that was never validated,
+    which is exactly the class of defect this module was hardened against.
+    """
+    cached = rgd_dir / GATE_DIR_NAME / f"{gate}.json"
+    if not cached.is_file():
+        return None
+    subject = rgd_dir / GATE_SUBJECTS[gate]
+    if cached.stat().st_mtime < _newest_mtime(subject):
+        return None
+    try:
+        payload = json.loads(cached.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    findings = payload.get("findings")
+    return findings if isinstance(findings, list) else None
+
+
+def validate_tuple(
+    mode: str,
+    rgd: str,
+    output_dir: Path,
+    context: str | None,
+    kubeconfig: str | None,
+    reuse_gates: bool = False,
+) -> TupleResult:
     start = time.time()
-    resources_dir = output_dir / mode / rgd / "resources"
-    rgd_file = output_dir / mode / rgd / "rgd.yaml"
+    rgd_dir = output_dir / mode / rgd
+    resources_dir = rgd_dir / "resources"
+    rgd_file = rgd_dir / "rgd.yaml"
+    reused: list[str] = []
 
     manifest_args = [RUN, "validate-manifest",
                      "--dir", str(resources_dir),
@@ -116,20 +167,28 @@ def validate_tuple(mode: str, rgd: str, output_dir: Path, context: str | None, k
     if kubeconfig:
         manifest_args += ["--kubeconfig", kubeconfig]
 
-    manifest_findings, mrc = _run_json(manifest_args)
-
     cel_args = [RUN, "validate-cel", str(rgd_file), "--format", "json"]
-    cel_findings, crc = _run_json(cel_args)
 
     # Spec-field existence: run over the whole <mode>/<rgd>/ subtree so it covers
     # both resources/*.yaml and the ACK templates nested in rgd.yaml.
-    spec_args = [RUN, "validate-spec-fields", str(output_dir / mode / rgd), "--format", "json"]
+    spec_args = [RUN, "validate-spec-fields", str(rgd_dir), "--format", "json"]
     if context:
         spec_args += ["--context", context]
     if kubeconfig:
         spec_args += ["--kubeconfig", kubeconfig]
 
-    spec_findings, src = _run_json(spec_args)
+    # rc 0 stands in for a reused gate: it ran, under the agent that wrote it.
+    def _gate(name: str, args: list[str]) -> tuple[list, int]:
+        if reuse_gates:
+            hit = _read_cached_gate(rgd_dir, name)
+            if hit is not None:
+                reused.append(name)
+                return hit, 1 if any(f.get("severity") == "error" for f in hit) else 0
+        return _run_json(args)
+
+    manifest_findings, mrc = _gate("manifest", manifest_args)
+    cel_findings, crc = _gate("cel", cel_args)
+    spec_findings, src = _gate("spec", spec_args)
 
     error = ""
     ok = True
@@ -164,12 +223,17 @@ def validate_tuple(mode: str, rgd: str, output_dir: Path, context: str | None, k
 @click.option("--kubeconfig", default=None, help="Kubeconfig path.")
 @click.option("--workers", default=8, show_default=True, type=int,
               help="Max concurrent tuples.")
+@click.option("--reuse-gates/--no-reuse-gates", default=False, show_default=True,
+              help="Reuse findings an inline per-agent gate already wrote to "
+                   "<mode>/<rgd>/.gates/{manifest,cel,spec}.json instead of re-running that "
+                   "validator. A cache older than the artifacts it covers is ignored and the "
+                   "validator runs anyway.")
 @click.option("--format", "output_format",
               type=click.Choice(["text", "json"]),
               default="text",
               show_default=True)
 def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str | None,
-         workers: int, output_format: str) -> None:
+         workers: int, reuse_gates: bool, output_format: str) -> None:
     modes = [m.strip() for m in modes_csv.split(",") if m.strip()]
     tuples = discover_tuples(output_dir, modes)
     if not tuples:
@@ -177,12 +241,13 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
         sys.exit(2)
 
     if output_format == "text":
-        click.echo(f"validating {len(tuples)} tuples across {len(modes)} modes with {workers} workers", err=True)
+        click.echo(f"validating {len(tuples)} tuples across {len(modes)} modes with {workers} workers"
+                   + (" (reusing fresh inline gates)" if reuse_gates else ""), err=True)
 
     started = time.time()
     results: list[TupleResult] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(validate_tuple, m, r, output_dir, context, kubeconfig)
+        futures = [pool.submit(validate_tuple, m, r, output_dir, context, kubeconfig, reuse_gates)
                    for m, r in tuples]
         for fut in concurrent.futures.as_completed(futures):
             results.append(fut.result())
