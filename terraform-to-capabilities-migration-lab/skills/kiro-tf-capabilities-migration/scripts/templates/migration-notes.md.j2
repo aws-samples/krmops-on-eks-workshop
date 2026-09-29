@@ -1,0 +1,229 @@
+{#-
+  MIGRATION-NOTES.md — operator runbook. Rendered by render_report.py --notes-out.
+
+  Scope rule (mirrors SKILL.md § "Author each decision ONCE"): this file carries
+  operator-ACTIONABLE content only — what to apply, in what order, how to verify, what
+  permissions are needed, what was dropped, how to roll back. The phase-by-phase decision
+  record lives in report.html and is linked, never restated.
+
+  Everything here is derived from migrate-set.json, decisions.json, the generated manifests
+  and scripts/data/ack-service-permissions.json. Nothing in this template requires an agent.
+-#}
+# Migration Notes — {{ notes.migration_name }}
+
+**Mode:** {{ notes.mode }}{% if notes.strategy %} — {{ notes.strategy }}{% endif %}
+**Source:** `{{ notes.source_path }}`{% if notes.state_location %} (state: `{{ notes.state_location }}`){% endif %}
+{% if notes.modules %}**Terraform modules:** {% for m in notes.modules %}`{{ m }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{%- if notes.region %}**Region:** {{ notes.region }}
+{% endif %}
+{%- if notes.namespace %}**Namespace:** `{{ notes.namespace }}`
+{% endif %}
+
+> Decision record, per-phase rationale and resource graph: see `report.html`.
+
+---
+
+## Apply order
+
+{% for rgd in notes.rgds %}
+### `{{ rgd.name }}`
+
+```bash
+kubectl apply -f {{ rgd.rgd_file }}
+kubectl wait --for=condition=Ready resourcegraphdefinition/{{ rgd.name }} --timeout=120s
+kubectl apply -f {{ rgd.instance_file }}
+```
+
+Resource creation order is inferred by kro from the template references below; it is not something
+to apply by hand.
+
+| # | Resource id | Kind | CR name |
+|---|---|---|---|
+{% for r in rgd.resources %}| {{ loop.index }} | `{{ r.id }}` | `{{ r.kind }}` | `{{ r.name }}` |
+{% endfor %}
+{% endfor %}
+
+---
+
+## Resources {{ 'adopted' if notes.mode == 'adopt' else 'provisioned' }}
+
+| TF address | ACK Kind | {{ 'AWS identifier looked up' if notes.mode == 'adopt' else 'CR name' }} |
+|---|---|---|
+{% for r in notes.resources %}| `{{ r.tf_address or '—' }}` | `{{ r.kind }}` | {% if r.adoption_fields %}`{{ r.adoption_fields }}`{% else %}`{{ r.name }}`{% endif %} |
+{% endfor %}
+
+{% if notes.consolidated %}
+## Resources merged into a parent CR
+
+These TF resources have no standalone ACK CRD. They are not missing — their configuration was
+folded into the parent resource's spec.
+
+| TF address | Merged into |
+|---|---|
+{% for c in notes.consolidated %}| `{{ c.address }}` | {{ c.merged_into }} |
+{% endfor %}
+{% endif %}
+
+{% if notes.unsupported %}
+## Unsupported — left in Terraform
+
+| TF address | Reason |
+|---|---|
+{% for u in notes.unsupported %}| `{{ u.address }}` | {{ u.reason }} |
+{% endfor %}
+{% endif %}
+
+{% if notes.class_a %}
+## Retained in Terraform (foundation infrastructure)
+
+{% for a in notes.class_a %}- `{{ a }}`
+{% endfor %}
+{% endif %}
+
+{% if notes.data_sources %}
+## Terraform data sources (not migrated)
+
+Data sources are reads, not managed resources. Where their result was needed it was resolved at
+generation time and written into the CR as a literal.
+
+{% for d in notes.data_sources %}- `data.{{ d.type }}.{{ d.name }}`
+{% endfor %}
+{% endif %}
+
+---
+
+## ACK capability role — required permissions
+
+The ACK capability role needs permissions for the services below. The skill does not modify this
+role: it is provisioned outside the migration (CDK, Terraform or console).
+
+{% if notes.managed_capability %}
+> On EKS Auto Mode managed capabilities these permissions are handled for you. The table is
+> informational — verify it only if you run self-managed ACK controllers.
+{% endif %}
+
+| Service | Adoption (read) | Management (write) | Covered by managed policy |
+|---|---|---|---|
+{% for p in notes.permissions %}| {{ p.label }} | {{ p.adoption|join(', ') }} | {{ p.management|join(', ') }} | {% if p.managed_policy %}`{{ p.managed_policy }}` ✅{% else %}⚠️ none — see below{% endif %} |
+{% endfor %}
+
+{% for p in notes.permissions if p.note %}
+**⚠️ {{ p.label }}** — {{ p.note }}
+
+{% if not p.managed_policy %}Minimum actions to add explicitly:
+
+```
+{% for a in p.adoption %}{{ a }}
+{% endfor %}{% for a in p.management %}{{ a }}
+{% endfor %}```
+{% endif %}
+{% endfor %}
+
+**Diagnosing a permission failure after applying:**
+
+```bash
+{% for r in notes.resources %}kubectl describe {{ r.kind|lower }} {{ r.name }}{% if notes.namespace %} -n {{ notes.namespace }}{% endif %} | grep -A3 "ACK.Recoverable"
+{% endfor %}```
+
+Look for `AccessDeniedException` — it names the exact missing action.
+
+---
+
+## kro Kubernetes RBAC
+
+Separate from AWS IAM: kro needs Kubernetes RBAC to create the ACK custom resources while
+reconciling the instance.
+
+| Layer | Controls | Who needs it |
+|---|---|---|
+| AWS IAM | API calls to AWS | ACK controller role |
+| Kubernetes RBAC | Access to CRDs/CRs in the cluster | kro controller role |
+
+Without it, reconciliation fails with `... is forbidden: User "...-kro-capability/KRO" cannot get
+resource ...`.
+
+API groups used by this migration:
+
+| API group | Resources |
+|---|---|
+{% for g in notes.api_groups %}| `{{ g.group }}` | {{ g.plurals|join(', ') }} |
+{% endfor %}
+
+{% if notes.managed_capability %}
+Handled automatically by EKS Auto Mode managed capabilities. For self-managed kro, grant an EKS
+access entry to the kro role or bind a ClusterRole scoped to the groups above.
+{% else %}
+Grant an EKS access entry for the kro role, or bind a ClusterRole scoped to the groups above.
+{% endif %}
+
+---
+
+## Verify
+
+{% for rgd in notes.rgds %}
+```bash
+kubectl get resourcegraphdefinition {{ rgd.name }}
+{% for r in rgd.resources %}kubectl get {{ r.kind|lower }} {{ r.name }}{% if notes.namespace %} -n {{ notes.namespace }}{% endif %}
+{% endfor %}```
+{% endfor %}
+
+Healthy state per resource:
+
+- `ACK.ResourceSynced: True`
+- `status.ackResourceMetadata.arn` populated
+- no `ACK.Recoverable` or `ACK.Terminal` condition
+
+{% if notes.omitted_fields %}
+---
+
+## Unsupported TF attributes
+
+These Terraform attributes have no field in the installed CRD and were omitted. Writing them
+anyway would have them silently pruned, or would wedge the RGD.
+
+| Kind | Attribute | Note |
+|---|---|---|
+{% for o in notes.omitted_fields %}| `{{ o.kind }}` | `{{ o.field }}` | {{ o.note }} |
+{% endfor %}
+{% endif %}
+
+{% if notes.findings_summary.errors or notes.findings_summary.warnings %}
+---
+
+## Validation findings
+
+{{ notes.findings_summary.errors }} error(s), {{ notes.findings_summary.warnings }} warning(s) at
+generation time. Full detail in `report.html`.
+{% if notes.findings_summary.errors %}
+**Errors are unresolved — do not apply until they are fixed.**
+{% endif %}
+{% endif %}
+
+{% if notes.mode == 'adopt' %}
+---
+
+## Rollback
+
+Adoption is non-destructive and reversible:
+
+- **`terraform.tfstate` is untouched.** Keep it as the rollback reference. Do not run
+  `terraform destroy` — the AWS resources are now also described by ACK CRs.
+- Every CR carries `services.k8s.aws/deletion-policy: retain`, so deleting a CR leaves the AWS
+  resource intact.
+- To roll back: delete the instance, then the RGD, then the CRs. The AWS resources survive and
+  Terraform still describes them.
+{% if notes.owner_references %}
+- **`ownerReferences` ARE set on the adopted CRs.** Deleting the instance will cascade-delete the
+  CRs. `deletion-policy: retain` still protects the AWS resources, but confirm that is the
+  intent before applying.
+{% else %}
+- `ownerReferences` are deliberately omitted, so deleting the instance does not cascade into the
+  CRs.
+{% endif %}
+{% endif %}
+
+---
+
+*Generated by `kiro-tf-capabilities-migration` from `migrate-set.json`, `decisions.json` and the
+generated manifests. Do not hand-edit — re-run `render-report` instead.*

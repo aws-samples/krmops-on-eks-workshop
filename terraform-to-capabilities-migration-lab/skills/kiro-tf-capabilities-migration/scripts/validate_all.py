@@ -69,13 +69,37 @@ def discover_tuples(output_dir: Path, modes: list[str]) -> list[tuple[str, str]]
 
 
 def _run_json(args: list[str]) -> tuple[list, int]:
-    """Run `scripts/run …` returning (findings list, rc)."""
+    """Run `scripts/run …` returning (findings list, rc).
+
+    A validator that produced no parseable JSON did not run. Turn that into a
+    finding rather than an empty list: an empty list is indistinguishable from
+    "clean" to every caller downstream, which is how a crashed validator used to
+    be rendered as a passing tuple.
+    """
     proc = subprocess.run(args, capture_output=True, text=True)
     try:
         parsed = json.loads(proc.stdout) if proc.stdout.strip() else {"findings": []}
     except json.JSONDecodeError:
-        parsed = {"findings": [], "_stderr": proc.stderr, "_stdout": proc.stdout}
-    return parsed.get("findings", []), proc.returncode
+        parsed = {"findings": []}
+
+    findings = parsed.get("findings", [])
+
+    # rc 0 = clean, rc 1 = ran and found severity=error. Anything else means the
+    # validator (or the scripts/run wrapper, which exits 2 on a missing venv)
+    # failed to execute.
+    if proc.returncode not in (0, 1):
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        findings = findings + [
+            {
+                "severity": "error",
+                "file": args[2] if len(args) > 2 else "?",
+                "message": (
+                    f"validator did not run: {' '.join(args[1:2])} exited {proc.returncode}"
+                    + (f" — {detail[0][:300]}" if detail else " with no output")
+                ),
+            }
+        ]
+    return findings, proc.returncode
 
 
 def validate_tuple(mode: str, rgd: str, output_dir: Path, context: str | None, kubeconfig: str | None) -> TupleResult:
@@ -166,15 +190,20 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
     total_elapsed = round(time.time() - started, 2)
 
     # Aggregate findings per mode; write mode-level findings.json for render-report.
-    per_mode: dict[str, list] = {m: [] for m in modes}
-    per_mode_cel: dict[str, list] = {m: [] for m in modes}
-    per_mode_spec: dict[str, list] = {m: [] for m in modes}
+    # Only for modes that actually produced tuples: pre-seeding every requested
+    # mode used to materialise an empty create/findings.json (and a create/
+    # directory) on an adopt-only run, which the operator then had to rm.
+    modes_with_tuples = sorted({m for m, _ in tuples})
+    per_mode: dict[str, list] = {m: [] for m in modes_with_tuples}
+    per_mode_cel: dict[str, list] = {m: [] for m in modes_with_tuples}
+    per_mode_spec: dict[str, list] = {m: [] for m in modes_with_tuples}
     for r in results:
         per_mode.setdefault(r.mode, []).extend(r.manifest_findings)
         per_mode_cel.setdefault(r.mode, []).extend(r.cel_findings)
         per_mode_spec.setdefault(r.mode, []).extend(r.spec_findings)
 
-    for mode in modes:
+    written: dict[str, str] = {}
+    for mode in modes_with_tuples:
         combined = (
             per_mode.get(mode, [])
             + per_mode_cel.get(mode, [])
@@ -183,8 +212,11 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
         target = output_dir / mode / "findings.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps({"findings": combined}, indent=2))
+        written[mode] = str(target)
 
-    # Any error-severity finding = overall non-zero exit.
+    # Non-zero exit on EITHER a severity=error finding OR a tuple whose
+    # validators did not run. The second half is the important one: a crashed
+    # validator yields no findings, so severity alone reported a clean sweep.
     any_errors = any(
         any(
             f.get("severity") == "error"
@@ -192,12 +224,14 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
         )
         for r in results
     )
+    broken = [r for r in results if not r.ok]
 
     if output_format == "json":
         payload = {
             "total_elapsed_seconds": total_elapsed,
             "results": [asdict(r) for r in results],
-            "per_mode_findings_written": {m: str(output_dir / m / "findings.json") for m in modes},
+            "per_mode_findings_written": written,
+            "tuples_with_broken_validators": [f"{r.mode}/{r.rgd}: {r.error}" for r in broken],
         }
         click.echo(json.dumps(payload, indent=2))
     else:
@@ -206,11 +240,19 @@ def main(output_dir: Path, modes_csv: str, context: str | None, kubeconfig: str 
             m_warn = sum(1 for f in r.manifest_findings if f.get("severity") == "warning")
             c_err = sum(1 for f in r.cel_findings if f.get("severity") == "error")
             s_err = sum(1 for f in r.spec_findings if f.get("severity") == "error")
-            marker = "✓" if (m_err == 0 and c_err == 0 and s_err == 0) else "✗"
+            # A tuple whose validators did not run is never a pass.
+            marker = "✓" if (r.ok and m_err == 0 and c_err == 0 and s_err == 0) else "✗"
             click.echo(f"  {marker} {r.mode}/{r.rgd:20s} manifest_err={m_err} warn={m_warn} cel_err={c_err} spec_err={s_err} {r.duration_seconds:.2f}s")
+            if not r.ok:
+                click.echo(f"      ! {r.error}", err=True)
         click.echo(f"total wall-clock: {total_elapsed}s   ({len(tuples)} tuples, {workers} workers)")
+        if broken:
+            click.echo(
+                f"{len(broken)} tuple(s) had a validator that did not run — results are INCOMPLETE",
+                err=True,
+            )
 
-    if any_errors:
+    if any_errors or broken:
         sys.exit(1)
 
 
