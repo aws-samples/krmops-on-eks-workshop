@@ -1,13 +1,28 @@
 """Validate that every spec field in generated ACK manifests exists in the live CRD.
 
-Why this gate exists (neither existing validator catches it):
+Why this gate exists, precisely:
 
-  * `validate-manifest` runs `kubectl apply --dry-run=server`, but the API server
-    **silently prunes** unknown fields in a custom resource (structural schema
-    pruning). The apply "succeeds" and the field is simply lost — no error.
+  * For a STANDALONE ACK CR under resources/, `validate-manifest` already covers
+    unknown spec fields. kubectl's default is `--validate=true`, which means
+    strict server-side field validation, and Strict rejects the request with 400
+    naming every unknown field. Field validation has been stable since Kubernetes
+    1.27 and its feature gate is gone, so this cannot be turned off cluster-side.
+    Unknown fields are pruned WITHOUT signal only at the Ignore/Warn levels.
+    => on resources/*.yaml this module is a cheap second opinion, not the gate.
+  * For an ACK template nested in a kro RGD, it IS the only gate. The RGD CRD
+    declares `spec.resources[].template` as
+    `x-kubernetes-preserve-unknown-fields: true`, which is the one documented
+    exception to both pruning and strict validation. The API server therefore
+    accepts anything inside a template and the dry-run passes. The failure
+    surfaces later, at RGD reconciliation, as
+    `error getting field schema for path spec.<field>: schema not found for
+    field <field>`, with the RGD wedged and no instance able to reconcile.
   * `validate-cel` is a CEL *grammar* gate only; it does not know CRD schemas.
-  * Inside a kro RGD template an unknown field does fail, but only later, at RGD
-    creation, with `schema not found for field <name>`.
+
+So: keep pointing this at the whole `<mode>/<rgd>/` subtree — the rgd.yaml half
+is load-bearing and offline-checkable, which is the point.
+
+Ref: https://kubernetes.io/docs/reference/using-api/api-concepts/ (Field validation)
 
 The recurring root cause is that AWS SDK/API parameters and Terraform lifecycle
 arguments are NOT the same set as ACK CRD spec fields (e.g. `skipFinalSnapshot`,
@@ -235,7 +250,23 @@ def check_canonical_schema_fields(doc: dict, file_str: str) -> list[dict]:
           canon = json.loads(CONTRACT.read_text())["naming_conventions"][
               "canonical_schema_spec_field_names"
           ]
-      except Exception:
+      except Exception as e:
+          # Never return silently: an empty finding list reads as "clean" to the
+          # caller, so a moved/renamed contract key would disable this check
+          # invisibly and the run would still report green.
+          findings.append({
+              "severity": "warning",
+              "file": file_str,
+              "kind": "ResourceGraphDefinition",
+              "name": (doc.get("metadata") or {}).get("name", "?"),
+              "field": "",
+              "message": (
+                  "canonical schema-field check did NOT run: could not read "
+                  f"naming_conventions.canonical_schema_spec_field_names from {CONTRACT.name} "
+                  f"({type(e).__name__}: {str(e).splitlines()[0][:150] if str(e) else 'no detail'}). "
+                  "Schema spec field names were NOT verified."
+              ),
+          })
           return findings
 
       allowed = {v for k, v in canon.items() if not k.startswith("_")}

@@ -2,13 +2,15 @@
 
 > Source: [ACK API Reference](https://aws-controllers-k8s.github.io/docs/api-reference), [ACK Services](https://aws-controllers-k8s.github.io/docs/services)
 
-## ⚠️ CRITICAL: This Mapping Table Is a Snapshot — ALWAYS Web-Verify
+## ⚠️ This Mapping Table Is a Snapshot — resolve against the cluster first
 
-**This file is a convenience reference that may be INCOMPLETE or OUTDATED.** The absence of a Terraform resource type from this table does NOT mean there is no ACK equivalent. ACK controllers and CRDs are added and updated frequently.
+**This file is a convenience reference that may be INCOMPLETE or OUTDATED.** The absence of a Terraform resource type from this table does NOT mean there is no ACK equivalent.
 
-**MANDATORY: For EVERY Terraform resource type being migrated, the agent MUST perform a web search to verify the ACK mapping — EVEN IF the resource already appears in this table (field names may have changed) and ESPECIALLY IF it does NOT appear here.**
+**Resolution order is `cluster.ack_crds` → this table → web, stopping at the first answer** (see `SKILL.md` § Phase 1 — Controller & Kind resolution). If the Kind is installed on the cluster, existence and field names are settled there and this table needs no web confirmation — the installed controller version is what reconciles the CR, and upstream `main` can disagree with it. Do **not** web-verify a mapping that the cluster already resolved.
 
-### Web Verification Steps (REQUIRED for every resource type)
+The web is needed for four things only: a Kind absent from the cluster, an `adoption-fields` lookup key missing from `authoring-contract.json`, an unlisted consolidation, and upstream-vs-cluster version drift on a field you intend to write.
+
+### Service-name derivation (local knowledge — not a search task)
 
 1. **Derive the AWS service name** from the TF resource type prefix:
    - `aws_s3_*` → service = `s3`
@@ -40,10 +42,9 @@
    - Search: `aws-controllers-k8s <service>-controller <Kind> CRD`
    - Search: `ACK <Kind> apiVersion spec fields`
 
-4. **Verify CRD field names** — ACK uses camelCase (AWS SDK Go naming), which differs from Terraform's snake_case. NEVER guess field names from TF attribute names. Always check the CRD YAML at:
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
+4. **Field names come from the live CRD, not from here and not from GitHub.** ACK uses camelCase (AWS SDK Go naming), which differs from Terraform's snake_case, so never guess from TF attribute names — but read the real names from the batched `kubectl get crd` output the skill already holds (`/tmp/crds.json`). Fetching `helm/crds` for a Kind that is installed on the cluster adds latency and can disagree with the version that will reconcile the CR.
 
-5. **If no controller exists after exhaustive search**, THEN mark as unsupported.
+5. **If the single listing in step 2 shows no matching Kind**, mark as unsupported. One bounded check, not a search loop.
 
 ### Common Pitfalls (Why Web Search Is Non-Negotiable)
 
@@ -61,7 +62,7 @@
 
 When parsing TF state or HCL, each resource has a `type` field (e.g., `aws_s3_bucket`).
 Use this table as a **starting point** to map it to the ACK apiVersion, Kind, and adoption lookup field.
-**Then web-verify the CRD schema before generating any YAML.**
+**Then read the real spec field names from the batched live-CRD output (`/tmp/crds.json`) before generating any YAML** — not from this table, and not from GitHub.
 
 ## Mapping Table
 
@@ -374,8 +375,9 @@ All identity-based permissions use the ACK IAM controller:
 ## Known CRD Field Pitfalls (Verified via Live Testing)
 
 > These are field name/type mismatches discovered during live cluster testing.
-> They demonstrate why **web-verifying CRD schemas is mandatory** — Terraform
-> attribute names do NOT reliably predict ACK CRD field names or types.
+> They demonstrate why **enumerating the live CRD is mandatory** — Terraform
+> attribute names do NOT reliably predict ACK CRD field names or types. The fix is
+> one batched `kubectl get crd` read, not a web search.
 
 ### IAM Role: `policies` NOT `managedPolicies`
 

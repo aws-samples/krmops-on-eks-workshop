@@ -90,12 +90,13 @@ That single command creates `scripts/.venv/`, installs Python dependencies, and 
 | Subcommand | Purpose | Called at |
 |---|---|---|
 | `scripts/run discover` | Parse tfstate + HCL + live-cluster CRD inventory → `migrate-set.json` | Phase 1 (both paths) |
-| `scripts/run crd-inventory` | Standalone CRD listing (called by discover, or ad-hoc if the cluster changed) | Phase 1; Phase 4 pre-validate if needed |
+| `scripts/run crd-inventory` | Standalone CRD listing (called by discover, or ad-hoc if the cluster changed); `--schema` adds required/immutable/spec/status per Kind | Phase 1; Phase 4 pre-validate if needed |
+| `scripts/run emit-interface` | Derived half of `shared-interface.md` — per-resource tfstate values, live-CRD schemas, verified mapping table. The skill appends only its decisions | Phase 3, before the authoring fan-out |
 | `scripts/run validate-manifest` | `kubectl apply --dry-run=server` per manifest + adoption-annotation invariants | Phase 4 (both paths) |
 | `scripts/run validate-cel` | CEL grammar check on `readyWhen` and `${…}` interpolations in RGDs | Phase 4 (both paths) |
-| `scripts/run validate-spec-fields` | Every spec field in the generated CRs **and** the ACK templates inside `rgd.yaml` must exist in the live CRD — catches fields that exist in the AWS SDK/Terraform but not the CRD (e.g. `skipFinalSnapshot`, `applyImmediately`). `--dry-run=server` cannot catch these: the API server silently **prunes** unknown fields | Phase 4 (both paths); also inline right after writing each CR in Phase 2 |
+| `scripts/run validate-spec-fields` | Every spec field in the generated CRs **and** the ACK templates inside `rgd.yaml` must exist in the live CRD — catches fields that exist in the AWS SDK/Terraform but not the CRD (e.g. `skipFinalSnapshot`, `applyImmediately`). **The `rgd.yaml` half is the part no other gate covers**: `resources[].template` is `x-kubernetes-preserve-unknown-fields: true`, so dry-run cannot see inside it. On `resources/*.yaml` the strict dry-run in `validate-manifest` already covers unknown fields | Phase 4 (both paths); also inline right after writing each CR in Phase 2 |
 | `scripts/run validate-all` | Parallel validate-spec-fields + validate-manifest + validate-cel across every `<mode>/<rgd>/` subtree; aggregates per-mode findings.json for render-report | Phase 4 (preferred over serial invocations — ~2.3× speedup measured) |
-| `scripts/run render-report` | Single-page HTML combining Phase_Checkpoint decisions + Cytoscape resource graph + migration report | Phase 4 (both paths) |
+| `scripts/run render-report` | Single-page HTML combining Phase_Checkpoint decisions + Cytoscape resource graph + migration report, **and `MIGRATION-NOTES.md` via `--notes-out`** — the notes are templated, never authored | Phase 4 (both paths) |
 | `scripts/run adopt` | Apply ACK CRs + poll `ACK.ResourceSynced=True` (verify adoption; **never** touches TF state) | Post-Phase 4, Adopt_Path only, opt-in |
 
 **Skill obligations at every phase:**
@@ -179,7 +180,7 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 
   **⚠️ DO NOT BISECT RELEASE TAGS.** "When was this mechanism introduced?" is the wrong question and it is expensive: one run fetched `resource.go` across ~8 tags per service (v1.2.6, v1.3.0, v1.3.5, v1.3.10–13, v1.3.14, v1.3.15, v1.3.20, v1.4.0) to pin an adoption-by-annotation gate that the installed version — ACK 46.137.1-eks-1, a bundled managed capability — cleared by years. Every one of those fetches was answerable from a single pre-fan-out command.
 
-  The ONLY drift question worth asking is scoped to fields you actually intend to write: "is any field I will write absent from `cluster.ack_crds` but present upstream?" That is a diff against the live CRD list you already hold — usually zero fetches, never a tag walk. If the answer is yes, name the version that added it and OMIT the field (it would be silently pruned).
+  The ONLY drift question worth asking is scoped to fields you actually intend to write: "is any field I will write absent from `cluster.ack_crds` but present upstream?" That is a diff against the live CRD list you already hold — usually zero fetches, never a tag walk. If the answer is yes, name the version that added it and OMIT the field (writing it fails the strict dry-run in a CR, and wedges the RGD in a template).
 
   Apply the Phase-A defect test: if the installed version already clears a gate, establishing when the gate appeared changes no action, so do not research it.
 - Do **NOT** spend effort enumerating required/immutable/all-spec-field-names — the batched live-CRD read (see `§ Coordination hazards`) is authoritative and cheaper. Report only where upstream **disagrees** with the cluster.
@@ -209,7 +210,7 @@ Grouping is also **more accurate**, not just cheaper: consolidation relationship
 **Each subagent's job (per RGD, per mode):**
 - Receive: the verified mapping table (from Phase A), the list of resource addresses in this group, the resolved TF attributes for each, and the mode (adopt or create).
 - Author `<rgd-name>/rgd.yaml` + `<rgd-name>/instance.yaml` + `<rgd-name>/resources/*.yaml`.
-- Run its own tight grounding loop: `./scripts/run validate-spec-fields <rgd>/` + `./scripts/run validate-manifest --dir <rgd>/resources --mode <mode>` + `./scripts/run validate-cel <rgd>/rgd.yaml`. Fix findings and re-run until clean or 3 attempts.
+- Run its own tight grounding loop, writing each result to `<rgd>/.gates/{manifest,cel,spec}.json` so the Phase 4 sweep can reuse it (see § Single-RGD fan-out for the exact commands). Fix findings and re-run until clean or 3 attempts.
 - Return `{rgd_name, files_written: [...], findings_summary: {errors, warnings}, attempts_needed: int}`.
 
 **Skill obligations:**
@@ -228,19 +229,55 @@ Corollary: independent files MUST be written in ONE message with multiple parall
 
 #### Single-RGD fan-out (by artifact type)
 
-When the Phase 1 grouping yields ONE resource group, the per-RGD unit gives no parallelism — so split the authoring by artifact instead. Target ~8–11 concurrent agents, within a `min(16, cores-2)` concurrency cap.
+When the Phase 1 grouping yields ONE resource group, the per-RGD unit gives no parallelism — so split the authoring by artifact instead. On the reference stack that is 9 agents (7 CRs + `rgd.yaml`/`instance.yaml` + `decisions.json`), within a `min(16, cores-2)` concurrency cap.
 
 **Prerequisite — publish the shared interface FIRST, in the main context, and write it to ONE FILE.** Before spawning, the skill MUST fix the interface and pass every agent its **path** (e.g. `/tmp/shared-interface.md`). Do NOT inline it into each prompt — that re-emits the same bytes once per agent on the main thread's critical path.
 
-The file MUST carry: (a) the final `schema.spec` field names (the canonical names from `authoring-contract.json` → `naming_conventions.canonical_schema_spec_field_names`, plus any added for CRD-required minima); (b) the resource `id` per Kind, alongside its filename and CR `metadata.name`; (c) the run parameters — RGD name, generated Kind, namespace and mode; (d) the verified Phase A mapping table including adoption-fields keys; (e) the live-CRD required/immutable/absent-field lists already read in Phase 1, plus any tag-shape exceptions; (f) the dependency-edge table; (g) the exact per-resource values from tfstate; (h) `references/authoring-contract.json` (by path is sufficient). Without this, agents pick divergent schema field names and the assembled RGD does not typecheck.
+**⚠️ Generate the derived half; author only the decisions.** Do NOT transcribe tfstate values or CRD schemas by hand — that was ~12 of the file's ~16 KB, emitted serially while every agent waited:
 
-Measured: one 15.9 KB interface file drove 6 concurrent agents to **zero schema drift** — all 15 `schema.spec` field names agreed, all 7 resource ids agreed, the instance matched the schema exactly, and every agent passed its gate on the first attempt.
+```bash
+./scripts/run crd-inventory --schema --out /tmp/crds.json
+./scripts/run emit-interface \
+  --migrate-set /tmp/migrate-set.json \
+  --crds /tmp/crds.json \
+  --out /tmp/shared-interface.md
+```
 
-**Fan-out — every applicable row below is MANDATORY, not a menu:**
+That emits **(d)** the verified mapping table with adoption-fields keys, **(e)** the live-CRD required/immutable/spec/status lists plus known shape exceptions, and **(g)** the per-resource tfstate values with `discover`'s redactions preserved.
+
+**Then append the decisions, which are yours and are deliberately not generated:** (a) the final `schema.spec` field names (canonical names from `authoring-contract.json` → `naming_conventions.canonical_schema_spec_field_names`, plus any added for CRD-required minima); (b) the resource `id` per Kind with its filename and CR `metadata.name`; (c) the run parameters — RGD name, generated Kind, namespace and mode; (f) the dependency-edge table; plus the literal-vs-CEL assignment per field. `references/authoring-contract.json` goes by path (h).
+
+Without the decisions appended, agents pick divergent schema field names and the assembled RGD does not typecheck. If `--crds` is omitted the CRD section says **NOT AVAILABLE** rather than appearing empty — an agent that cannot see the required-field list must know it is missing, not infer there are none.
+
+Measured: one 15.9 KB interface file drove 6 concurrent agents to **zero schema drift** — all 15 `schema.spec` field names agreed, all 7 resource ids agreed, the instance matched the schema exactly, and every agent passed its gate on the first attempt. Generating the derived half preserves that content; it only stops retyping it.
+
+**⚠️ ONE authoring wave, never two. Every agent below is spawned in a SINGLE message.** A second
+wave is legitimate only if an agent needs an input that does not exist until a first-wave agent
+returns — on this fan-out, none does. Observed cost of getting it wrong: CRs + `rgd.yaml` were
+spawned and awaited, then the rest were spawned, though they needed nothing from the first wave.
+**~128s added for no information.**
+
+**Fan-out — every applicable row below is MANDATORY, not a menu, and all of them go in the SAME message:**
 - One agent per ACK CR under `resources/` (7 on the reference stack; batch to ~3 if the CR count exceeds ~10). Each writes its own file and runs its own gate.
 - One agent for `rgd.yaml` + `instance.yaml` together — they share the schema, so splitting them guarantees drift.
-- One agent for `MIGRATION-NOTES.md`.
-- One agent for the `decisions.json` Phase 2–4 `checkpoints[]` entries. **These are an ARTIFACT, not skill bookkeeping — delegate them like any other.** Emitting them from the main thread serializes ~10–15 KB after the fan-out has drained, which is the worst possible placement. Spawn this agent concurrently with the CR agents; it needs only the Phase 1 checkpoint entry and the shared interface, both of which exist before authoring starts.
+- One agent for the `decisions.json` Phase 2–4 `checkpoints[]` entries. **These are an ARTIFACT, not skill bookkeeping — delegate them like any other.** Emitting them from the main thread serializes ~10–15 KB after the fan-out has drained, which is the worst possible placement. It needs only the Phase 1 checkpoint entry and the shared interface, both of which exist before authoring starts.
+
+**`MIGRATION-NOTES.md` is NOT in this fan-out.** It is generated from a template by
+`scripts/run render-report --notes-out` at the end of Phase 4 — see § Phase 4. Do not spawn an agent
+for it, and do not hand-author it.
+
+**⚠️ Every inline gate MUST write its findings to `<rgd-dir>/.gates/<name>.json`** so the Phase 4 sweep can reuse them instead of re-running identical work. The agent's own gate commands become:
+
+```bash
+mkdir -p <rgd-dir>/.gates
+./scripts/run validate-manifest --dir <rgd-dir>/resources --mode <mode> --format json > <rgd-dir>/.gates/manifest.json
+./scripts/run validate-cel <rgd-dir>/rgd.yaml --format json                            > <rgd-dir>/.gates/cel.json
+./scripts/run validate-spec-fields <rgd-dir> --format json                             > <rgd-dir>/.gates/spec.json
+```
+
+The names `manifest`, `cel` and `spec` are fixed — `validate-all --reuse-gates` looks for exactly those. **The agent still reads its own output and still fixes `severity: error` findings**; writing the file is additional, not a substitute for acting on it.
+
+Reuse is safe because staleness is checked, not assumed: `validate-all` compares each cached file's mtime against the newest YAML the gate covers and re-runs the validator when the artifacts are newer. So an agent that edits a file after its gate ran does not get a false pass — it gets the gate re-run, which is the correct outcome and another reason not to re-edit a written file.
 
 **Hand every authoring agent its gate as a literal, copy-paste-ready command line.** Agents MUST NOT read helper-script source to discover invocation syntax — if a fan-out prompt does not already contain the exact command, that is a defect in the prompt, not a research task for the agent. Reading `scripts/*.py` is warranted ONLY when authoring a JSON input file that a script consumes (e.g. `decisions.json` for `render_report.py`), never to run a validator. Observed cost of getting this wrong: ~8s of one agent's critical path spent reading `validate_cel.py` and `validate_spec_fields.py` while its prompt already contained both commands.
 
@@ -250,7 +287,7 @@ NOT allowed: ASCII separator/banner blocks; multi-line per-resource preambles; r
 
 Rationale: generated YAML is emitted serially on one agent's critical path, so comment bytes are wall-clock. Measured: `rgd.yaml` at 35% comments (6,008 of 17,223 B) inside an 82-second single write, with the same content already rendered in two other artifacts. That one file was 1.9× the size of all seven CRs combined.
 
-**Main thread keeps ONLY:** assembly, the single `validate-all`, `render-report`, and the post-render `grep` assertions.
+**Main thread keeps ONLY:** assembly, the single `validate-all`, `render-report` (which also emits `MIGRATION-NOTES.md`), and the post-render `grep` assertions.
 
 Per-stage effort tuning is appropriate here: `effort: low` for the mechanical per-CR agents, default effort for the `rgd.yaml` agent (CEL, `readyWhen` scope, dependency-edge and immutability rules live there). Do NOT lower effort globally — see § Do NOT reduce reasoning effort globally.
 
@@ -270,12 +307,21 @@ Per-stage effort tuning is appropriate here: `effort: low` for the mechanical pe
 ./scripts/run validate-all \
   --output migration-output/ \
   --context $KUBECTL_CONTEXT \
-  --workers 8
+  --workers 8 \
+  --reuse-gates
 ```
 
 `validate-all` auto-discovers every `<mode>/<rgd>/` subtree and runs validate-spec-fields + validate-manifest + validate-cel across all `(mode, rgd)` tuples concurrently via a thread pool. Aggregates findings into `<mode>/findings.json` ready for `render-report`. Exit code non-zero iff any tuple has a `severity: error` finding. **Use this instead of orchestrating separate subagents unless you specifically want per-RGD subagent conversation state.**
 
-Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s parallel). Projected on 3-RGD × 2-mode (6 tuples): ~4-5× speedup, bounded by the slowest tuple.
+**`--reuse-gates` is the default invocation.** A validator whose inline-gate output under
+`<mode>/<rgd>/.gates/` is newer than every YAML it covers is not re-run; its findings are reused and
+still aggregated. On a single-RGD stack every gate hits, so the sweep collapses to aggregation plus
+`instance.yaml` — the two jobs no inline gate covers. A cache older than the artifacts is ignored and
+the validator runs, so this cannot mask a late edit. Drop to `--no-reuse-gates` when you want an
+independent second opinion, e.g. after changing the cluster context.
+
+Note the three validators run serially **within** one tuple, so the parallelism below only pays
+across tuples: a one-RGD run gets its saving from `--reuse-gates`, not from `--workers`.
 
 **Housekeeping — always scope the sweep to the requested mode.** `validate-all` auto-discovers `<mode>/` subtrees and writes a `findings.json` for **every** mode directory it creates, including an empty `create/findings.json` on an adopt-only run. **Always pass `--modes <mode>` matching the operator's requested mode. Auto-discovery is for `--mode both` only.** This removes the post-hoc `rm -rf <unused-mode>/` step entirely; without it you must delete the unused mode directory before rendering so the output tree matches the requested mode.
 
@@ -296,46 +342,35 @@ Measured on a 3-RGD adopt-only workload: **2.31× speedup** (45s serial → 18s 
 
 - **Shared kubeconfig / kubectl.** Read-only server-side calls (`kubectl apply --dry-run=server`, `kubectl get crd`) are safe under high concurrency. Write-side (real `kubectl apply`, `adopt.py`) stays serial.
 - **Decision drift between subagents.** Two authoring subagents can pick incompatible label conventions if the shared authoring contract is fuzzy. Encode the contract as a static JSON handed to every subagent, not as prose.
-- **⚠️ kubectl startup cost dominates on short calls — BATCH CRD reads. This is a rule, not a future optimization.** Each invocation costs ~1–2s of process startup, so a 7-iteration shell loop over CRDs wastes ~30–60s versus one call. `kubectl get crd` accepts **multiple names in a single invocation**, and one `-o json` pass carries spec properties, `required`, `x-kubernetes-validations` (immutability) and status properties together — so enumerate all of them in ONE call, not three passes:
+- **⚠️ Read the CRD schemas with ONE command. `crd-inventory --schema` is that command.** Each `kubectl` invocation costs ~1–2s of process startup, so a shell loop over 7 CRDs wastes ~30–60s versus one call. Do not hand-roll the batching — the helper does it, selects the **storage** version rather than `versions[0]`, and caches the result:
 
   ```bash
-  kubectl get crd \
-    dbinstances.rds.services.k8s.aws \
-    dbsubnetgroups.rds.services.k8s.aws \
-    securitygroups.ec2.services.k8s.aws \
-    roles.iam.services.k8s.aws \
-    policies.iam.services.k8s.aws \
-    secrets.secretsmanager.services.k8s.aws \
-    podidentityassociations.eks.services.k8s.aws \
-    -o json > /tmp/crds.json
-
-  python3 - /tmp/crds.json <<'PY'
-  import sys, json
-  for c in json.load(open(sys.argv[1]))["items"]:
-      props = c["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
-      spec = props["spec"]
-      status = props.get("status", {})
-      p = spec["properties"]
-      print("==", c["spec"]["names"]["kind"])
-      print("  required :", spec.get("required", []))
-      print("  immutable:", [k for k in p if p[k].get("x-kubernetes-validations")])
-      print("  spec     :", sorted(p))
-      print("  status   :", sorted(status.get("properties", {})))
-  PY
+  ./scripts/run crd-inventory --schema --format text \
+    --name dbinstances.rds.services.k8s.aws \
+    --name dbsubnetgroups.rds.services.k8s.aws \
+    --name securitygroups.ec2.services.k8s.aws \
+    --name roles.iam.services.k8s.aws \
+    --name policies.iam.services.k8s.aws \
+    --name secrets.secretsmanager.services.k8s.aws \
+    --name podidentityassociations.eks.services.k8s.aws \
+    --context $KUBECTL_CONTEXT \
+    --out /tmp/crds.txt
   ```
 
-  Writing to `/tmp/crds.json` first means later questions ("is field X present on Kind Y?")
-  are answered from the local file instead of another round trip to the API server.
+  Per Kind it prints `required`, `immutable` (the keys carrying `x-kubernetes-validations`), every `spec` property and every `status` property — the four facts needed before authoring. Drop `--format text --out` to get the same data as JSON on stdout.
 
-  Anti-pattern to avoid — three loops over the same list, ~21 invocations where 1 suffices:
+  **This call is idempotent.** The result is cached per (API server, context, name set), so a second invocation inside the cache window is a local file read with no API traffic — re-running a phase is free. `--refresh` forces a round trip; `--max-age 0` disables the cache.
+
+  A Kind you asked for that is not installed is reported on stderr (`not installed on this cluster: …`) rather than silently missing from the output. That line is a classification answer, not an error.
+
+  Anti-patterns, all of which this command replaces:
 
   ```bash
-  for c in <7 crds>; do kubectl get crd $c -o jsonpath='...spec.properties'; done   # ✗
-  for c in <7 crds>; do kubectl get crd $c -o json | ... required/immutable; done   # ✗
-  for c in <7 crds>; do kubectl get crd $c -o json | ... status; done               # ✗
+  for c in <7 crds>; do kubectl get crd $c -o jsonpath='...'; done   # ✗ ~21 invocations where 1 suffices
+  kubectl get crd <names> -o json | python3 - <<'PY' ... PY          # ✗ re-implements --schema, and reads versions[0]
   ```
 
-  Same rule for `kubectl apply --dry-run=server`: pass repeated `-f` flags (or `-f <dir>`) in one invocation rather than shelling out per file.
+  Same batching rule for `kubectl apply --dry-run=server`: pass repeated `-f` flags (or `-f <dir>`) in one invocation rather than shelling out per file — which is what `validate-manifest --dir` already does.
 
 ### Do NOT reduce reasoning effort globally
 
@@ -442,7 +477,7 @@ Then reason over the emitted JSON:
 
 1. Verify version 4 was parsed (`source.state_location` was set and `resources[]` is populated).
 2. For each resource in `migrate-set.json`, look up its Terraform type against `cluster.ack_crds`. The mapping is derived at runtime — an ACK Kind exists iff a CRD in `*.services.k8s.aws` with that Kind is installed. `aws-to-ack-mappings.md` is a HINT only; the live CRD list is authoritative.
-3. **🌐 Web-verify** each resource's ACK controller status per [Mandatory Web Verification](#mandatory-web-verification-all-phases) — especially for resources whose CRD is not in the current cluster (may be GA on another cluster).
+3. **Only if step 2 left the type unresolved**, follow the resolution chain in [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer) — it stops at the first step that answers. A Kind present in `cluster.ack_crds` is already resolved; do not web-verify it.
 4. Identify resources that ACK consolidates into parent CRs (e.g., `aws_iam_role_policy_attachment` → merged into Role).
 5. The cross-reference and dependency graphs are already in `migrate-set.cross_refs`; use them for RGD `readyWhen` ordering.
 6. Document any resources without an ACK Kind installed in the target cluster.
@@ -486,10 +521,17 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 **References:** `ack/adoption/adoption-patterns.md`, `ack/adoption/examples.md`
 
-**MANDATORY before authoring any CR — read and apply these `references/authoring-contract.json` sections:**
+**MANDATORY before authoring any CR — read and apply these `references/authoring-contract.json` sections.**
+
+**⚠️ Read it ONCE per run, scoped.** It is ~33 KB: a bare `cat` dumps all of it, and a second `cat`
+later dumps it again — both were observed. Subagents get it by path, never inlined.
 
 ```bash
-cat references/authoring-contract.json
+python3 -c "
+import json; c = json.load(open('references/authoring-contract.json'))
+for k in ('adoption_fields_by_kind','consolidation_rules','naming_conventions','rgd_template_rules','adopt_mode_rules'):
+    print(json.dumps({k: c[k]}, indent=2))
+"
 ```
 
 Sections that are **binding rules, not suggestions**:
@@ -502,7 +544,7 @@ Sections that are **binding rules, not suggestions**:
 | `naming_conventions.cr_metadata_name` | CR `metadata.name` = `<migration-name>-<kind-kebab-case>` — no exceptions |
 | `naming_conventions.resource_filename` | Filename = `<kind-kebab-case>.yaml` — no exceptions |
 | `consolidation_rules` | `aws_iam_role_policy_attachment` MUST populate `spec.policies` on the Role — never skip silently |
-| `pre_write_crd_field_check` | Every spec field MUST exist in the live CRD — enumerate it, don't infer from AWS docs (unknown fields are silently pruned) |
+| `pre_write_crd_field_check` | Every spec field MUST exist in the live CRD — enumerate it, don't infer from AWS docs. In an RGD template an unknown field is invisible to the API server and wedges the RGD at reconciliation |
 
 **Validation gate:** before writing any CR file, confirm adoption-fields for that Kind against `adoption_fields_by_kind`. If the Kind is absent from the section, web-verify the controller source before proceeding. Then run `./scripts/run validate-spec-fields <resources-dir>` to confirm every spec field exists in the live CRD.
 
@@ -517,7 +559,7 @@ For each adoptable resource, generate an ACK CR. The **`adoption-policy`** value
 
 Rules for `adoption-policy: adopt` (the Adopt_Path default):
 
-- **🌐 Web-verify the CRD field schema before generating** — fetch the ACK API reference or CRD YAML to confirm exact field names, required fields, and nesting structure (see [Mandatory Web Verification](#mandatory-web-verification-all-phases)). Do NOT guess field names from Terraform attribute names.
+- **Read field names, required fields and nesting from the batched local CRD read** (`/tmp/crds.json`, see [§ Coordination hazards](#coordination-hazards)). Do NOT fetch a CRD schema from GitHub or the ACK reference site, and do NOT guess field names from Terraform attribute names — see [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer).
 - Use `services.k8s.aws/adoption-policy: adopt`.
 - Use `services.k8s.aws/adoption-fields` with the lookup JSON per resource type (see the lookup table in `adoption-patterns.md`).
 - **Ideal is `spec: {}`** per the doc — ACK will populate spec from live AWS state after adoption. This is the semantic contract.
@@ -650,25 +692,35 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 Generate:
 1. **Instance YAML** — populated with values extracted from TF state (names, ARNs, region, etc.)
-2. **MIGRATION-NOTES.md** — resources adopted, resources skipped, validation steps, **required IAM permissions**
 
-**⚠️ Author each decision ONCE. `MIGRATION-NOTES.md` and `decisions.json` have different jobs — do not let the notes restate the phase narrative.**
+**⚠️ `MIGRATION-NOTES.md` is NOT authored — it is rendered by `render-report --notes-out`.** Do not
+write it by hand, do not spawn an agent for it, do not edit it afterwards (a re-run overwrites it).
+It derives from `migrate-set.json`, `decisions.json`, the manifests and
+`scripts/data/ack-service-permissions.json`. Rationale: ~90% of it was static text or a transform of
+JSON already in hand, costing ~15 KB of serial output on the fan-out's critical path — and a prose
+rule asking for brevity did not hold across models.
+
+**Your job is to put the facts the template cannot derive into `decisions.json`.** Four optional
+keys, each rendering a section only when present:
+
+| `decisions.json` key | Shape | Renders as |
+|---|---|---|
+| `consolidated` | `[{address, merged_into}]` | "Resources merged into a parent CR" |
+| `omitted_fields` | `[{kind, field, note}]` | "Unsupported TF attributes" — the fields you dropped because they are absent from the live CRD |
+| `owner_references` | `true` \| `false` | Selects the correct rollback warning |
+| `managed_capability` | `true` \| `false` | Softens the IAM/RBAC sections when the cluster uses EKS Auto Mode managed capabilities |
+
+`consolidated` and `omitted_fields` are the two you will almost always need on the Adopt_Path:
+every `aws_iam_role_policy_attachment` folded into a Role belongs in the first, and every field
+`validate-spec-fields` told you to drop belongs in the second.
+
+**⚠️ Author each decision ONCE.** `decisions.json` is the only artifact you write prose into:
 
 | Artifact | Sole responsibility | MUST NOT contain |
 |---|---|---|
 | `decisions.json` → `report.html` | The phase-by-phase decision record, per-checkpoint needs-attention items, operator responses | Operator runbook commands |
-| `MIGRATION-NOTES.md` | **Operator-actionable content only:** apply order, verification commands, IAM/RBAC requirements, unsupported TF attributes, rollback procedure | A re-narration of Phase 1–4 decisions — link to `report.html` instead |
+| `MIGRATION-NOTES.md` | Generated. Operator-actionable content only: apply order, verification commands, IAM/RBAC requirements, unsupported attributes, rollback | Anything hand-written |
 | Chat Phase_Checkpoint summary | The pause itself, so the operator can respond | — |
-
-Write the notes as if the reader has `report.html` open in another tab. For decision
-*rationale*, cross-reference rather than restate:
-
-```markdown
-> Decision record and resource graph: see `report.html` § Phase decisions.
-```
-
-A ~15 KB MIGRATION-NOTES.md on a 7-resource stack is a smell — it means the phase
-narrative was copied in. Target the operator-actionable subset.
 
 **Grounding loop (MANDATORY before the Phase_Checkpoint):**
 
@@ -682,7 +734,8 @@ concurrently and writes the per-mode `findings.json` that `render-report` consum
 ./scripts/run validate-all \
   --output <output-dir>/ \
   --context $KUBECTL_CONTEXT \
-  --workers 8
+  --workers 8 \
+  --reuse-gates
 ```
 
 Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
@@ -758,58 +811,46 @@ Only if you ran the serial validators for isolation: merge `/tmp/spec-fields-fin
   --decisions /tmp/decisions.json \
   --manifests-dir <output-dir>/ \
   --findings /tmp/findings.json \
-  --out <output-dir>/report.html
+  --out <output-dir>/report.html \
+  --notes-out <output-dir>/MIGRATION-NOTES.md \
+  --mode adopt
 ```
+
+**`--notes-out` and `--mode` are MANDATORY.** Pass `--mode` explicitly: the fallback reads
+`decisions.json` → `path`, which is `both` on a default run and cannot describe one mode. On
+`--mode both`, call `render-report` once per mode with the matching `--manifests-dir`.
 
 `decisions.json` is the running record of Phase_Checkpoint outcomes the skill has kept throughout the run (see [Skill obligations](#helper-scripts-python) above). The generated `report.html` is a self-contained single page containing the decision framework, the migration report, and a Cytoscape resource graph (RGD abstraction → ACK CRs → underlying AWS resources → TF-retained). Open it in a browser to review before adopt/apply.
 
-#### Permissions Analysis (MANDATORY in MIGRATION-NOTES.md)
+**Check the notes line on stdout** — `wrote …/MIGRATION-NOTES.md (6214 B, 7 resources, 4 services)`.
+`0 resources` means a wrong `--manifests-dir`. A service count below the distinct ACK groups you
+generated means `scripts/data/ack-service-permissions.json` lacks an entry; stderr names it, and it
+goes in the Phase 4 Decision_Summary.
 
-The MIGRATION-NOTES.md **MUST** include a permissions guidance section:
+The permissions table, managed-policy gaps, diagnosis commands, kro RBAC note and API-group list are
+all templated from the services your CRs actually use. So: do NOT write a permissions section, and do
+NOT generate IAM policy JSON (the capability role is managed externally). Per-service actions live in
+`scripts/data/ack-service-permissions.json` — the **normative** copy; add missing services there, not
+to `controller-permissions.md`, which nothing reads. Set `managed_capability: true` when the cluster
+uses EKS Auto Mode managed capabilities, so the template marks those sections informational instead
+of action-required.
 
-1. **Required ACK Controllers** — list which controllers are needed (s3, iam, eks, etc.)
-2. **Permissions table** — for each service, state the minimum actions needed and whether a common AWS managed policy covers them
-
-4. **Diagnosis command** — show `kubectl describe <kind> <name> | grep -A3 "ACK.Recoverable"` for post-apply troubleshooting
-
-**Key rules:**
-- Do NOT generate IAM policy JSON documents — the ACK capability role is managed externally (CDK, Terraform, console)
-- Do NOT include permissions for services that are covered by standard managed policies without flagging them
-- Only flag services with **known gaps** (actions not in any managed policy)
-- The goal is to **alert** the user, not to fix their IAM setup
-
-#### KRO Kubernetes RBAC (Informational Note in MIGRATION-NOTES.md)
-
-KRO needs **Kubernetes RBAC permissions** (not AWS IAM) to create and manage ACK custom resources inside the cluster. This is a separate layer from IAM:
-
-| Layer | Controls | Who needs it |
-|-------|----------|--------------|
-| AWS IAM | API calls to AWS (s3:GetBucket, etc.) | ACK controller role |
-| Kubernetes RBAC | Access to CRDs/CRs inside the cluster | KRO controller role |
-
-**The problem (most likely self-managed deployments):** KRO creates ACK CRs (Buckets, Roles, Policies) as part of reconciling a ResourceGraphDefinition. If the KRO role doesn't have RBAC access to those API groups (`s3.services.k8s.aws`, `iam.services.k8s.aws`, etc.), reconciliation fails with:
-```
-"buckets" is forbidden: User "...-kro-capability/KRO" cannot get resource "buckets"
-in API group "s3.services.k8s.aws" in the namespace "default"
-```
-
-**Solution:** The KRO capability role needs an EKS access entry with cluster admin permissions (or a scoped ClusterRole/ClusterRoleBinding granting access to the ACK API groups used in the RGD).
-
-
-**MIGRATION-NOTES.md must include (as an informational note, not a mandatory action):**
-1. A note that KRO needs Kubernetes RBAC to manage ACK resources (relevant for self-managed deployments)
-2. The specific ACK API groups involved (based on the resources in the migration)
-3. Guidance: either configure an EKS access entry for the KRO role, or apply a ClusterRole/ClusterRoleBinding
+**Read the generated permissions section before the checkpoint** — it is where the gaps the
+checkpoint must report come from.
 
 #### Phase_Checkpoint — Phase 4 (Adopt_Path)
 
 At the end of this phase, report the following Decision_Summary and **pause** for operator validation before finalizing the output.
 
-**Decisions to report:**
+**Decisions to report** — the permission and RBAC items are now **read from the generated
+`MIGRATION-NOTES.md`**, not composed here. Render it first, then report what it says; do not
+re-derive the gaps in the chat summary:
+
 - Instance values populated (names, ARNs, region, account ID — all extracted from TF state)
-- Noted permission gaps (services where no AWS managed policy covers required actions — informational for self-managed deployments)
-- KRO Kubernetes RBAC note + ACK API groups involved (informational for self-managed deployments; handled automatically by EKS Auto Mode managed capabilities)
-- `ownerReferences` flag state: whether `ownerReferences` was included or omitted on adopted resources
+- Noted permission gaps — the services the generated table marks `⚠️ none`
+- KRO Kubernetes RBAC note + the ACK API groups the generated table lists (informational for self-managed deployments; handled automatically by EKS Auto Mode managed capabilities)
+- `ownerReferences` flag state: whether `ownerReferences` was included or omitted on adopted resources. Record the same value as `owner_references` in `decisions.json` so the notes render the matching rollback warning
+- Any ACK service that `render-report` warned had no permission data
 
 **⚠️ Needs Attention — surface explicitly:**
 - **`ownerReferences` cascade-delete warning (ALWAYS surface at this checkpoint):** The pending default is to **omit** `ownerReferences` (rollback-safe). If `ownerReferences` is set on adopted resources and the KRO ResourceGraphDefinition instance is later deleted, Kubernetes garbage collection will **cascade-delete the ACK CRs**, which in turn deletes the **live AWS resources** (unless `deletion-policy: retain` catches them). The operator must deliberately opt in or confirm omission before the output is finalized.
@@ -826,7 +867,7 @@ Output is grouped **per RGD**, not per file. One Terraform stack may produce N R
 ```
 <output-dir>/
 ├── report.html                  # skill-level combined report (all RGDs)
-├── MIGRATION-NOTES.md           # skill-level migration notes
+├── MIGRATION-NOTES.md           # generated by render-report --notes-out (never hand-written)
 ├── <rgd-name-1>/
 │   ├── rgd.yaml                 # KRO ResourceGraphDefinition (parameterized)
 │   ├── instance.yaml            # Claim/Instance — RGD input document
@@ -959,7 +1000,7 @@ The `rekoncile.io/tf-attributes` annotation is verbose but load-bearing — it's
 1. `<output-dir>/adopt/<rgd-name>/rgd.yaml` — parameterized adoption RGD
 2. `<output-dir>/adopt/<rgd-name>/instance.yaml` — literal AWS IDs from this stack (reusable per env by editing this file only)
 3. `<output-dir>/adopt/<rgd-name>/resources/*.yaml` — rendered adoption CRs for review + kubectl dry-run
-4. `<output-dir>/MIGRATION-NOTES.md` — skill-level notes covering all RGDs
+4. `<output-dir>/MIGRATION-NOTES.md` — generated by `render-report --notes-out`, covering all RGDs
 5. `<output-dir>/report.html` — self-contained single-page report
 
 ### Adopt_Path — Optional Post-Phase 4 Verification
@@ -977,12 +1018,22 @@ After the operator has reviewed `report.html` and applied the manifests, confirm
 
 **Terraform state is left untouched (Key Principle 7).** This tool never runs `terraform state rm`; `terraform.tfstate` remains a valid rollback backup. Terraform and ACK co-manage the live resources — just do not run `terraform apply`/`terraform destroy` against the adopted resources afterwards.
 
-### Adopt_Path MIGRATION-NOTES Validation Steps
+### Adopt_Path MIGRATION-NOTES contents
 
-The generated MIGRATION-NOTES.md MUST include:
-1. Post-adoption validation: confirm `READY: True`, `status.ackResourceMetadata.arn` populated, `ACK.ResourceSynced: True`
-2. Required ACK controllers list
-5. Diagnosis command: `kubectl describe <kind> <name> | grep -A3 "ACK.Recoverable"`
+The template emits all of the following; this list is here so you can confirm the render is complete,
+not so you can write them:
+
+1. Apply order per RGD, and the RGD → instance sequence
+2. Resources adopted, with TF address and the `adoption-fields` lookup actually used
+3. Resources merged into a parent CR (from `decisions.json` → `consolidated`)
+4. Permissions table with managed-policy gaps, and the ACK API groups for kro RBAC
+5. Post-adoption verification: `ACK.ResourceSynced: True`, `status.ackResourceMetadata.arn` populated, no `ACK.Recoverable`/`ACK.Terminal`
+6. Diagnosis command per resource: `kubectl describe <kind> <name> | grep -A3 "ACK.Recoverable"`
+7. Unsupported TF attributes (from `decisions.json` → `omitted_fields`)
+8. Rollback, branching on `decisions.json` → `owner_references`
+
+If a section you expected is missing, the cause is a missing `decisions.json` key — not a reason to
+hand-edit the file.
 
 ---
 
@@ -1007,7 +1058,7 @@ Then reason over the emitted JSON:
 
 1. Verify `hcl.resources[]`, `hcl.variables[]`, `hcl.outputs[]`, `hcl.locals`, and `hcl.data[]` were populated.
 2. Map each `hcl.resources[]` type against `cluster.ack_crds` (the live CRD inventory is authoritative; `aws-to-ack-mappings.md` is a hint only).
-3. **🌐 Web-verify** each resource's ACK controller status per [Mandatory Web Verification](#mandatory-web-verification-all-phases).
+3. **Only for types step 2 left unresolved**, follow the resolution chain in [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer).
 4. Record resource types with no ACK equivalent for the operator summary.
 5. Identify resources that ACK consolidates into parent CRs.
 6. The HCL-derived dependency graph is already in `migrate-set.cross_refs` (entries with `"source": "hcl"`).
@@ -1045,7 +1096,14 @@ kubectl get crd <plural>.<group> \
 
 Every spec field you write MUST appear in this output. AWS SDK/API parameters and Terraform lifecycle arguments are **not** the same set as ACK CRD spec fields, so reading the AWS service docs is not evidence that a field exists. If a TF attribute has no matching CRD field, **omit it** and record it in MIGRATION-NOTES.md under "Unsupported TF attributes".
 
-Why this is a hard gate: unknown fields in a CR are **silently pruned** by the API server, so `kubectl apply --dry-run=server` will not flag them (the value is just lost); inside an RGD template kro fails the type check with `schema not found for field <name>`. See `references/authoring-contract.json` → `pre_write_crd_field_check` for the rule and a (non-authoritative) snapshot of known gaps — the live enumeration above always wins.
+Why this is a hard gate — and where each validator actually bites:
+
+| Where the unknown field is | Caught by | Mechanism |
+|---|---|---|
+| a standalone CR under `resources/` | `validate-manifest` (and `validate-spec-fields`) | kubectl defaults to `--validate=true` = strict server-side field validation, so the API server returns `400` naming the field |
+| an ACK template inside `rgd.yaml` | **only** `validate-spec-fields` | `spec.resources[].template` is `x-kubernetes-preserve-unknown-fields: true` — the documented exception to validation and pruning. Dry-run passes; kro then rejects the RGD at reconciliation with `schema not found for field <name>` |
+
+The RGD half is the reason this gate is offline and mandatory: nothing the API server does will tell you about it. See `references/authoring-contract.json` → `pre_write_crd_field_check` for the rule and a (non-authoritative) snapshot of known gaps — the live enumeration above always wins.
 
 **⚠️ MANDATORY — write each CR file to disk immediately after authoring it:**
 
@@ -1057,7 +1115,7 @@ Do NOT accumulate CR content in memory and write everything at Phase 4. Write ea
 
 For each resource with an ACK equivalent, generate a full-spec ACK CR:
 - **Write `resources/<kind-kebab-case>.yaml` to disk immediately after authoring each CR**
-- **🌐 Web-verify the CRD field schema before generating** — fetch the ACK API reference or CRD YAML to confirm exact field names, required fields, and nesting structure (see [Mandatory Web Verification](#mandatory-web-verification-all-phases)). Do NOT guess field names from Terraform attribute names.
+- **Read field names, required fields and nesting from the batched local CRD read** (`/tmp/crds.json`, see [§ Coordination hazards](#coordination-hazards)). Do NOT fetch a CRD schema from GitHub or the ACK reference site, and do NOT guess field names from Terraform attribute names — see [Web Verification](#web-verification--scoped-to-what-the-cluster-cannot-answer).
 - Populate the full resource spec from Terraform variables (Req 4.4)
 - Do NOT include any ACK adoption annotations (`adoption-policy`, `adoption-fields`, `deletion-policy`)
 - Set `services.k8s.aws/region` for regional resources
@@ -1130,26 +1188,20 @@ At the end of this phase, report the following Decision_Summary and **pause** fo
 
 Generate:
 1. **Instance YAML** — populated with example values that satisfy all required RGD schema fields (Req 4.8)
-2. **MIGRATION-NOTES.md** (or equivalent docs) — resources generated, unsupported resources recorded, permission guidance
 
-**⚠️ Author each decision ONCE. `MIGRATION-NOTES.md` and `decisions.json` have different jobs — do not let the notes restate the phase narrative.**
+**⚠️ `MIGRATION-NOTES.md` is NOT authored here either.** It is rendered by
+`render-report --notes-out --mode create`. See the Adopt_Path § *Phase 4* for the full rule and the
+`decisions.json` keys that feed it; `omitted_fields` and `unsupported` are the two that matter most
+on this path, since a self-serve blueprint has to state what it cannot provision.
 
 | Artifact | Sole responsibility | MUST NOT contain |
 |---|---|---|
 | `decisions.json` → `report.html` | The phase-by-phase decision record, per-checkpoint needs-attention items, operator responses | Developer-facing usage instructions |
-| `MIGRATION-NOTES.md` | **Actionable content only:** how a developer consumes the self-serve RGD, required RGD schema inputs, IAM/RBAC requirements, unsupported TF resources and attributes | A re-narration of Phase 1–4 decisions — link to `report.html` instead |
+| `MIGRATION-NOTES.md` | Generated. How a developer consumes the RGD, required schema inputs, IAM/RBAC requirements, unsupported resources and attributes | Anything hand-written |
 | Chat Phase_Checkpoint summary | The pause itself, so the operator can respond | — |
 
-Write the notes as if the reader has `report.html` open in another tab. For decision
-*rationale*, cross-reference rather than restate:
-
-```markdown
-> Decision record and resource graph: see `report.html` § Phase decisions.
-```
-
-On the Create_Path the notes' job is the **developer contract** for the published
-abstraction (what to put in an instance, what each schema field means), not a migration
-narrative. If the notes are mostly phase history, the split has been lost.
+The template links back to `report.html` for decision rationale rather than restating it, so the
+split is enforced by construction rather than by discipline.
 
 **Grounding loop (MANDATORY before the Phase_Checkpoint):**
 
@@ -1163,7 +1215,8 @@ concurrently and writes the per-mode `findings.json` that `render-report` consum
 ./scripts/run validate-all \
   --output <output-dir>/ \
   --context $KUBECTL_CONTEXT \
-  --workers 8
+  --workers 8 \
+  --reuse-gates
 ```
 
 Exit code is non-zero iff any tuple has a `severity: error` finding. Prefer this as the
@@ -1224,8 +1277,14 @@ Only if you ran the serial validators for isolation, merge the three findings fi
   --decisions /tmp/decisions.json \
   --manifests-dir <output-dir>/ \
   --findings /tmp/findings.json \
-  --out <output-dir>/report.html
+  --out <output-dir>/report.html \
+  --notes-out <output-dir>/MIGRATION-NOTES.md \
+  --mode create
 ```
+
+`--notes-out` and `--mode create` are MANDATORY, same as on the Adopt_Path. The template drops the
+adoption-specific sections (`adoption-fields` lookups, rollback, Terraform state) when the mode is
+`create`.
 
 The Create_Path report shows the RGD abstraction with its child CR templates and (when a tfstate was also provided) the underlying resources those templates parameterize; the Adopt_Path visualization is muted since no runtime AWS resources are being adopted on this path.
 
@@ -1312,7 +1371,7 @@ Same traceability rule as the adopt path: every literal has a comment or label p
 1. `<output-dir>/create/<rgd-name>/rgd.yaml` — self-serve create RGD parameterized on TF variables
 2. `<output-dir>/create/<rgd-name>/instance.yaml` — example instance
 3. `<output-dir>/create/<rgd-name>/resources/*.yaml` — rendered create CRs for review + kubectl dry-run
-4. `<output-dir>/MIGRATION-NOTES.md` — skill-level notes
+4. `<output-dir>/MIGRATION-NOTES.md` — generated by `render-report --notes-out`
 5. `<output-dir>/report.html` — self-contained single-page report
 
 ---
@@ -1326,7 +1385,7 @@ Same traceability rule as the adopt path: every literal has a comment or label p
 5. **One TF module → One RGD**
 6. **Adopt uses `spec: {}` (strict import)** — under `adoption-policy: adopt`, spec MUST be empty. ACK populates spec from live AWS state. Populate spec ONLY under `adoption-policy: adopt-or-create` (and only when that policy is intentional) or when a specific CRD's OpenAPI schema rejects an empty spec on live dry-run (record and escalate as a finding).
 7. **Never modify Terraform state on the AWS/ACK path** — the skill never alters, removes from, or writes to `terraform.tfstate`; Terraform and ACK coexist safely on both the Adopt_Path and the Create_Path
-8. **Alert on permission gaps** — MIGRATION-NOTES.md must flag services where no AWS managed policy covers the required actions, so users can update their ACK capability role before applying
+8. **Alert on permission gaps** — the generated MIGRATION-NOTES.md flags services where no AWS managed policy covers the required actions, so users can update their ACK capability role before applying. Read it and carry the gaps into the Phase 4 Decision_Summary
 9. **`ownerReferences` is an Open_Item** — the default for adopted resources is pending a service-team decision; the rollback-safe pending default is to omit `ownerReferences` (prevents accidental cascade-delete of live AWS resources). See `references/kro/adoption/instances.md` for the cascade-delete warning and opt-in flag.
 
 ## Phase Decision Checkpoints
@@ -1383,9 +1442,9 @@ These are **potential future additions** (or a separate skill), not removed capa
 
 See `references/known-limitations.md` for detailed documentation of these future-extension paths.
 
-## Mandatory Web Verification (All Phases)
+## Web Verification — scoped to what the cluster cannot answer
 
-**Before generating ANY output (ACK CRs, RGD templates, or documentation), the agent MUST verify each resource's CRD schema against live documentation.** Local reference files (`controllers-catalog.md`, `aws-to-ack-mappings.md`) provide initial mappings, but they may be outdated. The agent must:
+**The live cluster is the authority on CRD schemas. The web is the authority on the four things a CRD does not contain.** Read the division of labour below and stay inside it: every web call spent re-deriving a field name, a required set, an immutability marker or a status shape is pure latency, because one batched `kubectl get crd` already returned all of it.
 
 ### Division of labour — what the web is FOR (and what it is not)
 
@@ -1409,28 +1468,35 @@ Two measured examples of why the web half is non-negotiable — both invisible t
 - IAM Policy is adoptable **only by `arn`**; `GetPolicy` has no name lookup, so `{"name":…}` sits in `NotFound` forever.
 - `secretsmanager/Secret.spec.recoveryWindowInDays` exists upstream (≥ v1.6.0) but not on older clusters — writing it means silent pruning.
 
-### Phase 1 — Controller & CRD Existence Verification
+### Phase 1 — Controller & Kind resolution (cluster first, web on miss)
 
-For **every** Terraform resource type discovered — whether or not it appears in `controllers-catalog.md` or `aws-to-ack-mappings.md`:
+Resolve each TF resource type in this order and **STOP at the first step that answers**. Do not continue to a later step once resolved.
 
-1. **Derive the service name** from the TF resource type prefix (e.g., `aws_api_gateway_*` → `apigateway`, `aws_lambda_*` → `lambda`, `aws_dynamodb_*` → `dynamodb`). Note that TF naming and ACK controller naming may differ — try variations.
+1. **`cluster.ack_crds` (already in `migrate-set.json`, zero cost).** If the Kind is installed, existence is settled — the installed CRD is what will reconcile the CR, and an upstream repo listing cannot override that. Take the group, Kind, plural and served version from here.
 
-2. **Search GitHub for the controller repo** — try ALL of the following until you find it or exhaust options:
-   - `https://github.com/aws-controllers-k8s/<service>-controller` (direct URL)
-   - Web search: `github.com aws-controllers-k8s <service>-controller`
-   - Web search: `aws-controllers-k8s <TF resource prefix without aws_> controller`
-   - If a service has v1/v2 variants (like API Gateway), search for BOTH: `apigateway-controller` AND `apigatewayv2-controller`
+2. **`authoring-contract.json` → `adoption_fields_by_kind`, checked against its version stamp (zero cost).** Read the installed controller line ONCE, before any fan-out, per `adoption_fields_verified_against._how_to_read_installed_version`. Then per Kind:
 
-3. **Check the CRD directory** — once you find the controller repo, fetch:
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
-   - The CRD filenames reveal every supported Kind (e.g., `apigateway.services.k8s.aws_restapis.yaml` → Kind = `RestAPI`)
+   | Installed vs. `adoption_fields_verified_against[<group>/<Kind>]` | Action |
+   |---|---|
+   | satisfies the stamp | the cached key is **provably valid** — do NOT web-verify it |
+   | below the stamp, or the Kind is absent from the table | web-verify **that one service** (step 4) |
 
-4. **Do NOT trust local references alone:**
-   - If `aws-to-ack-mappings.md` says "no ACK equivalent" → **STILL web-search** (the mapping may be outdated)
-   - If `controllers-catalog.md` doesn't list a controller → **STILL web-search** (the catalog may be incomplete)
-   - If the local reference says "Alpha" or "unsupported" but the web shows GA → **trust the web**
+   A bundled ACK capability reports a platform version, not per-service tags; `46.x` or above satisfies every `ack-runtime` stamp in the table. **Never** bisect release tags — if the installed version already clears the gate, establishing when the gate appeared changes no action.
 
-5. **Only after exhausting all search strategies**, mark a resource as genuinely unsupported.
+   This step exists because an unstamped cache is unfalsifiable: a previous run spawned 5 web-verification agents (~40s) to re-derive keys the contract already stated verbatim, IAM-Policy-arn-only among them. The stamp is what makes "skip the web" a checkable claim rather than a request for trust.
+
+3. **`references/known-limitations.md` + `consolidation_rules` in the contract (zero cost).** Covers the TF types ACK folds into a parent Kind (`aws_iam_role_policy_attachment`, `aws_security_group_rule`, `aws_secretsmanager_secret_version`, route-table associations, …). A type listed here is resolved — do not enumerate a repo to reconfirm it.
+
+4. **Web, only for what steps 1–3 left open.** Exactly three questions reach this step:
+   - the Kind is **not** installed on the cluster → does a controller exist upstream at all? One fetch of `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`; the filenames reveal every Kind. If a service has v1/v2 variants (API Gateway), check both.
+   - the Kind is installed but **absent from `adoption_fields_by_kind`** → read its lookup key from `pkg/resource/<resource>/resource.go` → `PopulateResourceFromAnnotation`.
+   - a TF type matches **no** Kind and is **not** in the consolidation tables → confirm consolidation from the `helm/crds` filenames plus the `pkg/resource/` package list, per the stop line in § Parallel Phase A.
+
+   Nothing else goes to the web. In particular: do **not** fetch a CRD schema to learn field names, required fields, immutability or status shapes — those come from the batched `kubectl get crd` read (§ Coordination hazards).
+
+5. **Mark unsupported** when step 4's first question comes back negative — no controller upstream, or no Kind for this resource.
+
+**Service-name derivation** is local knowledge, not a search task. Use the pitfalls table below before guessing.
 
 **Common service name derivation pitfalls:**
 | TF prefix | ❌ Wrong guess | ✅ Correct controller |
@@ -1442,38 +1508,36 @@ For **every** Terraform resource type discovered — whether or not it appears i
 | `aws_cloudwatch_log_*` | `cloudwatch-controller` | `cloudwatchlogs-controller` |
 | `aws_sfn_*` | `stepfunctions-controller` | `sfn-controller` |
 
-### Phase 2 — CRD Field Schema Verification
+### Phase 2 — CRD field schemas come from the cluster, NOT the web
 
-For **every** ACK CR being generated:
+**Do not fetch a CRD schema from GitHub or from the ACK reference site.** One batched `kubectl get crd … -o json` (§ Coordination hazards) returns spec properties, `required`, `x-kubernetes-validations` (immutability) and status properties for every Kind at once, from the controller version that will actually reconcile the CR. Fetching the same schema from `main` is slower and can disagree with the cluster.
 
-1. **Fetch the CRD spec field schema** — search for the resource's API reference or CRD YAML at:
-   - `https://aws-controllers-k8s.github.io/community/reference/<service>/v1alpha1/<kind>/`
-   - `https://github.com/aws-controllers-k8s/<service>-controller/tree/main/helm/crds`
-2. **Verify required fields** — do NOT guess field names from Terraform attribute names. ACK field names follow the AWS SDK Go naming convention (camelCase), which may differ from Terraform's snake_case attribute names.
-3. **Verify field nesting** — some Terraform top-level attributes map to nested ACK spec fields (e.g., `source_code_hash` is not an ACK field; Lambda code is under `spec.code.s3Bucket` + `spec.code.s3Key`).
-4. **Check for cross-resource references** — ACK CRDs often support `*Ref` fields (e.g., `roleRef` instead of `role`) for referencing other ACK-managed resources within the same namespace.
+What still applies when reading that local output:
+
+1. **Never guess field names from Terraform attribute names.** ACK follows AWS SDK Go camelCase; TF uses snake_case. Take the name from the enumerated CRD keys.
+2. **Watch for nesting.** Some TF top-level attributes map to nested ACK spec fields (`source_code_hash` is not an ACK field; Lambda code lives under `spec.code.s3Bucket` + `spec.code.s3Key`).
+3. **Check for `*Ref` fields.** ACK CRDs often expose `roleRef` alongside `role` for referencing other ACK-managed resources in the same namespace.
+
+`./scripts/run validate-spec-fields` is the gate for all three — it checks every written key against the live CRD and exits non-zero on an unknown field.
 
 ### Phase 3 — KRO Syntax Verification
 
 1. **Verify KRO version-dependent syntax** — if `forEach`, `omit()`, or other evolving primitives are used, check the latest KRO docs at `https://kro.run/docs/concepts/rgd/`.
 2. **Verify CEL expression patterns** — especially for status field access (`?` operator, `.orValue()` patterns).
 
-### Why This Matters — Non-Negotiable
+### Why This Matters
 
-- **NEVER classify a resource as "no ACK equivalent" without exhausting all web search strategies first**
-- ACK controllers are independently versioned and graduate from Preview to GA frequently
-- New controllers and CRDs are added regularly without local reference files being updated
-- CRD schemas evolve between controller versions (fields added, renamed, deprecated)
-- The `controllers-catalog.md` and `aws-to-ack-mappings.md` are convenience snapshots that WILL be incomplete
-- Generating CRs with incorrect field names results in API server validation errors at apply time
-- Incorrectly marking a resource as unsupported means the migration is incomplete
-- **The cost of a few web searches is negligible compared to producing an incomplete or invalid migration**
+- **Do not mark a resource unsupported on the strength of a local reference alone.** `controllers-catalog.md` and `aws-to-ack-mappings.md` are convenience snapshots and will be incomplete. But "not in the snapshot" is answered by `cluster.ack_crds` first — one web check (Phase 1 step 4) settles it, not an open-ended search.
+- Incorrectly marking a resource as unsupported means the migration is incomplete.
+- Generating CRs with incorrect field names produces API server validation errors, or silent pruning — which is why `validate-spec-fields` gates every written key against the live CRD.
+- ACK controllers are independently versioned, so upstream and this cluster can disagree. **The cluster wins** for anything it can answer; the web only covers the four questions in the division of labour above.
+- **Web calls are not free.** Each one is wall-clock on the critical path. Bounded verification that answers the question beats exhaustive verification that re-answers it — if a step above already resolved a fact, stop.
 
 ### Verification Failure Handling
 
-- If a web search returns no results for a specific CRD field schema → fall back to the AWS API reference for that service (CreateFunction API → maps to ACK Function spec)
-- If verification reveals a field name differs from what the local reference suggests → use the web-verified name and document the discrepancy
-- If verification is impossible (network issues, page unavailable) → proceed with local references but add a `# VERIFY: field names not web-verified` comment on affected resources
+- **A CRD field schema is never a web question.** If a field name is unclear, re-read `/tmp/crds.json`. If the Kind is absent from it, the controller is not installed — that is a classification answer, not a cue to search.
+- If a local reference disagrees with the live CRD → the live CRD wins. Record the discrepancy in `MIGRATION-NOTES.md`; do not research which is "really" right.
+- If the one web question a step legitimately needs (adoption-fields key, consolidation, upstream-only field) cannot be answered — network down, page unavailable — record it in `MIGRATION-NOTES.md` and continue. Do not retry with different search phrasings.
 
 ---
 

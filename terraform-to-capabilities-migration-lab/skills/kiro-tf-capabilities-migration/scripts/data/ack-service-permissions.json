@@ -1,0 +1,91 @@
+{
+  "_comment": "Machine-readable form of references/ack/controller-permissions.md, consumed by render_report.py to emit the MIGRATION-NOTES.md permissions section. This file is the NORMATIVE source for the per-service action lists; the .md keeps the prose rationale and the authoring rules and points here. Keyed by ACK service (the first label of the CR apiVersion, e.g. iam.services.k8s.aws -> iam).",
+  "_rules": [
+    "List only the services involved in the specific migration.",
+    "Flag services where no managed policy covers the needed actions — informational, relevant for self-managed ACK deployments.",
+    "Do NOT generate IAM policy JSON — the capability role is managed externally.",
+    "managed_policy: null means no AWS managed policy covers these actions."
+  ],
+
+  "s3": {
+    "label": "S3",
+    "adoption": ["s3:GetBucket*", "s3:ListBucket"],
+    "management": ["s3:CreateBucket", "s3:DeleteBucket", "s3:PutBucket*"],
+    "managed_policy": "AmazonS3FullAccess"
+  },
+  "iam": {
+    "label": "IAM",
+    "adoption": ["iam:GetRole", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListRoleTags", "iam:ListAttachedRolePolicies", "iam:ListRolePolicies", "iam:ListPolicyTags", "iam:ListPolicyVersions"],
+    "management": ["iam:CreateRole", "iam:UpdateRole", "iam:DeleteRole", "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:TagRole", "iam:TagPolicy"],
+    "managed_policy": "IAMFullAccess"
+  },
+  "eks": {
+    "label": "EKS",
+    "adoption": ["eks:DescribePodIdentityAssociation", "eks:ListPodIdentityAssociations", "eks:DescribeAddon", "eks:DescribeNodegroup", "eks:DescribeAccessEntry", "eks:ListTagsForResource"],
+    "management": ["eks:CreatePodIdentityAssociation", "eks:UpdatePodIdentityAssociation", "eks:DeletePodIdentityAssociation", "eks:CreateAddon", "eks:UpdateAddon", "eks:DeleteAddon"],
+    "managed_policy": null,
+    "note": "No AWS managed policy includes eks:DescribePodIdentityAssociation. For self-managed ACK controllers the action must be added explicitly to the controller's IAM role."
+  },
+  "ec2": {
+    "label": "EC2",
+    "adoption": ["ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeRouteTables", "ec2:DescribeInternetGateways", "ec2:DescribeNatGateways", "ec2:DescribeTags"],
+    "management": ["ec2:Create*", "ec2:Delete*", "ec2:Modify*", "ec2:AuthorizeSecurityGroup*", "ec2:RevokeSecurityGroup*"],
+    "managed_policy": "AmazonEC2FullAccess"
+  },
+  "rds": {
+    "label": "RDS",
+    "adoption": ["rds:DescribeDBInstances", "rds:DescribeDBClusters", "rds:DescribeDBSubnetGroups", "rds:ListTagsForResource"],
+    "management": ["rds:CreateDBInstance", "rds:ModifyDBInstance", "rds:DeleteDBInstance", "rds:CreateDBCluster", "rds:ModifyDBCluster", "rds:DeleteDBCluster"],
+    "managed_policy": "AmazonRDSFullAccess"
+  },
+  "secretsmanager": {
+    "label": "Secrets Manager",
+    "adoption": ["secretsmanager:DescribeSecret", "secretsmanager:GetResourcePolicy", "secretsmanager:ListSecretVersionIds"],
+    "management": ["secretsmanager:CreateSecret", "secretsmanager:UpdateSecret", "secretsmanager:DeleteSecret", "secretsmanager:PutSecretValue", "secretsmanager:TagResource"],
+    "managed_policy": "SecretsManagerReadWrite",
+    "note": "SecretsManagerReadWrite covers the adoption and management actions above but does not grant kms:Decrypt for a customer-managed key; a secret encrypted with a CMK needs that added separately."
+  },
+  "dynamodb": {
+    "label": "DynamoDB",
+    "adoption": ["dynamodb:DescribeTable", "dynamodb:ListTagsOfResource", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTimeToLive"],
+    "management": ["dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:DeleteTable", "dynamodb:TagResource"],
+    "managed_policy": "AmazonDynamoDBFullAccess"
+  },
+  "sqs": {
+    "label": "SQS",
+    "adoption": ["sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:ListQueueTags"],
+    "management": ["sqs:CreateQueue", "sqs:DeleteQueue", "sqs:SetQueueAttributes", "sqs:TagQueue"],
+    "managed_policy": "AmazonSQSFullAccess"
+  },
+  "sns": {
+    "label": "SNS",
+    "adoption": ["sns:GetTopicAttributes", "sns:ListTagsForResource"],
+    "management": ["sns:CreateTopic", "sns:DeleteTopic", "sns:SetTopicAttributes", "sns:TagResource"],
+    "managed_policy": "AmazonSNSFullAccess"
+  },
+  "lambda": {
+    "label": "Lambda",
+    "adoption": ["lambda:GetFunction", "lambda:ListTags", "lambda:GetFunctionCodeSigningConfig"],
+    "management": ["lambda:CreateFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:DeleteFunction", "lambda:TagResource"],
+    "managed_policy": "AWSLambda_FullAccess"
+  },
+  "ecr": {
+    "label": "ECR",
+    "adoption": ["ecr:DescribeRepositories", "ecr:ListTagsForResource"],
+    "management": ["ecr:CreateRepository", "ecr:DeleteRepository", "ecr:PutLifecyclePolicy", "ecr:TagResource"],
+    "managed_policy": "AmazonECRFullAccess"
+  },
+  "kms": {
+    "label": "KMS",
+    "adoption": ["kms:DescribeKey", "kms:ListResourceTags", "kms:ListAliases"],
+    "management": ["kms:CreateKey", "kms:CreateAlias", "kms:DeleteAlias", "kms:TagResource", "kms:ScheduleKeyDeletion"],
+    "managed_policy": null,
+    "note": "No AWS managed policy grants key administration without also granting broad cryptographic use; scope a custom policy to the specific key ARNs."
+  },
+  "cloudwatchlogs": {
+    "label": "CloudWatch Logs",
+    "adoption": ["logs:DescribeLogGroups", "logs:ListTagsForResource"],
+    "management": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:TagResource"],
+    "managed_policy": "CloudWatchLogsFullAccess"
+  }
+}

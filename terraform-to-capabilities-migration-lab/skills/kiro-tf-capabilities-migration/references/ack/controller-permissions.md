@@ -63,7 +63,16 @@ When adopting existing resources, ACK needs **read** access to describe the reso
 
 ## For MIGRATION-NOTES.md Generation
 
-The skill should include a section like:
+> **⚠️ The action lists above are mirrored in `scripts/data/ack-service-permissions.json`, which is
+> the NORMATIVE copy.** `render_report.py` reads that file to emit the permissions section of
+> `MIGRATION-NOTES.md`. This markdown keeps the rationale and the authoring rules; it is not read by
+> any script. **When a service's actions or managed policy change, or a new service is added, edit
+> the JSON** — editing only this file has no effect on generated output. Keyed by ACK service, i.e.
+> the first label of the CR apiVersion (`iam.services.k8s.aws` → `iam`).
+>
+> The skill no longer hand-writes this section. What follows documents the shape the template emits.
+
+The generated section looks like:
 
 ```markdown
 ## ACK Capability Role — Required Permissions

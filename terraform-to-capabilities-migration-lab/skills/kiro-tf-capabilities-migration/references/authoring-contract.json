@@ -1,14 +1,20 @@
 {
   "_comment": "Authoring contract handed to every Phase B (per-RGD authoring) subagent. Static JSON so N concurrent authors converge on the same conventions. Update in ONE place; never fork per subagent.",
   "version": "2026-09-26",
-
   "output_layout": {
     "root": "migration-output/",
     "per_rgd_dir": "<mode>/<rgd-name>/",
-    "files_per_rgd": ["rgd.yaml", "instance.yaml", "resources/*.yaml"],
-    "mode_level_files": ["decisions.json", "findings.json", "report.html"]
+    "files_per_rgd": [
+      "rgd.yaml",
+      "instance.yaml",
+      "resources/*.yaml"
+    ],
+    "mode_level_files": [
+      "decisions.json",
+      "findings.json",
+      "report.html"
+    ]
   },
-
   "labels": {
     "_purpose": "Selection-friendly, regex-constrained ([A-Za-z0-9._-]). Applied on RGD and on every rendered CR under resources/.",
     "required": {
@@ -22,7 +28,6 @@
       "rekoncile.io/tf-module": "TF module the RGD represents, e.g. vpc, eks, root"
     }
   },
-
   "annotations": {
     "_purpose": "Free-form, no regex constraints. Carry exact TF traceability info that would fail label validation.",
     "required_on_rendered_cr": {
@@ -35,12 +40,14 @@
       "value": "e.g. us-west-2"
     }
   },
-
   "adopt_mode_rules": {
     "_derived_from_ack_doc": "references/ack/adoption/adoption-patterns.md",
     "adoption_annotations": {
       "services.k8s.aws/adoption-policy": {
-        "values": ["adopt", "adopt-or-create"],
+        "values": [
+          "adopt",
+          "adopt-or-create"
+        ],
         "default": "adopt",
         "when_to_use_adopt": "Strict import — ACK reads spec from live state. Ideal spec: {}.",
         "when_to_use_adopt_or_create": "You want the CR to double as create-if-missing. Fully populated spec required."
@@ -56,34 +63,100 @@
       "ideal": "spec: {} under adoption-policy: adopt",
       "reality": "Most ACK v1.x CRDs enforce OpenAPI required-field validation even on adopt. Populate ONLY the required subset with live values. Add comment '# CRD-required minimum on adopt; ACK re-reads on adopt.'",
       "known_openapi_required_by_kind": {
-        "iam.services.k8s.aws/Role": ["name", "assumeRolePolicyDocument"],
-        "iam.services.k8s.aws/Policy": ["name", "policyDocument"],
-        "iam.services.k8s.aws/OpenIDConnectProvider": ["url", "clientIDs"],
-        "s3.services.k8s.aws/Bucket": ["name"],
-        "rds.services.k8s.aws/DBInstance": ["dbInstanceIdentifier", "engine", "dbInstanceClass"],
-        "rds.services.k8s.aws/DBSubnetGroup": ["name", "description", "subnetIDs"],
-        "rds.services.k8s.aws/DBParameterGroup": ["name", "description", "family"],
-        "ec2.services.k8s.aws/VPC": ["cidrBlocks"],
-        "ec2.services.k8s.aws/Subnet": ["cidrBlock", "vpcID", "availabilityZone"],
+        "iam.services.k8s.aws/Role": [
+          "name",
+          "assumeRolePolicyDocument"
+        ],
+        "iam.services.k8s.aws/Policy": [
+          "name",
+          "policyDocument"
+        ],
+        "iam.services.k8s.aws/OpenIDConnectProvider": [
+          "url",
+          "clientIDs"
+        ],
+        "s3.services.k8s.aws/Bucket": [
+          "name"
+        ],
+        "rds.services.k8s.aws/DBInstance": [
+          "dbInstanceIdentifier",
+          "engine",
+          "dbInstanceClass"
+        ],
+        "rds.services.k8s.aws/DBSubnetGroup": [
+          "name",
+          "description",
+          "subnetIDs"
+        ],
+        "rds.services.k8s.aws/DBParameterGroup": [
+          "name",
+          "description",
+          "family"
+        ],
+        "ec2.services.k8s.aws/VPC": [
+          "cidrBlocks"
+        ],
+        "ec2.services.k8s.aws/Subnet": [
+          "cidrBlock",
+          "vpcID",
+          "availabilityZone"
+        ],
         "ec2.services.k8s.aws/InternetGateway": [],
         "ec2.services.k8s.aws/NATGateway": [],
         "ec2.services.k8s.aws/ElasticIPAddress": [],
-        "ec2.services.k8s.aws/RouteTable": ["vpcID"],
-        "ec2.services.k8s.aws/SecurityGroup": ["name", "description", "vpcID"],
-        "ec2.services.k8s.aws/LaunchTemplate": ["name", "data"],
+        "ec2.services.k8s.aws/RouteTable": [
+          "vpcID"
+        ],
+        "ec2.services.k8s.aws/SecurityGroup": [
+          "name",
+          "description",
+          "vpcID"
+        ],
+        "ec2.services.k8s.aws/LaunchTemplate": [
+          "name",
+          "data"
+        ],
         "kms.services.k8s.aws/Key": [],
-        "kms.services.k8s.aws/Alias": ["name", "targetKeyID"],
-        "cloudwatchlogs.services.k8s.aws/LogGroup": ["name"],
-        "eks.services.k8s.aws/Cluster": ["name", "version", "roleARN", "resourcesVPCConfig"],
-        "eks.services.k8s.aws/Nodegroup": ["clusterName", "name", "nodeRole", "subnets"],
-        "eks.services.k8s.aws/AccessEntry": ["clusterName", "principalARN"],
-        "eks.services.k8s.aws/Capability": ["clusterName", "deletePropagationPolicy", "name", "type"],
-        "secretsmanager.services.k8s.aws/Secret": ["name"],
-        "eks.services.k8s.aws/PodIdentityAssociation": ["clusterName", "namespace", "serviceAccount"]
+        "kms.services.k8s.aws/Alias": [
+          "name",
+          "targetKeyID"
+        ],
+        "cloudwatchlogs.services.k8s.aws/LogGroup": [
+          "name"
+        ],
+        "eks.services.k8s.aws/Cluster": [
+          "name",
+          "version",
+          "roleARN",
+          "resourcesVPCConfig"
+        ],
+        "eks.services.k8s.aws/Nodegroup": [
+          "clusterName",
+          "name",
+          "nodeRole",
+          "subnets"
+        ],
+        "eks.services.k8s.aws/AccessEntry": [
+          "clusterName",
+          "principalARN"
+        ],
+        "eks.services.k8s.aws/Capability": [
+          "clusterName",
+          "deletePropagationPolicy",
+          "name",
+          "type"
+        ],
+        "secretsmanager.services.k8s.aws/Secret": [
+          "name"
+        ],
+        "eks.services.k8s.aws/PodIdentityAssociation": [
+          "clusterName",
+          "namespace",
+          "serviceAccount"
+        ]
       }
     }
   },
-
   "create_mode_rules": {
     "adoption_annotations_forbidden": [
       "services.k8s.aws/adoption-policy",
@@ -93,7 +166,6 @@
     "spec_shape": "Fully populated. Cross-refs inside an RGD use KRO refs (roleRef.from.name / vpcRef.from.name / targetKeyRef.from.name) not string interpolation, unless referring to status.ackResourceMetadata.arn.",
     "parameterization": "Every value that comes from a Terraform variable becomes a schema.spec field with the TF default preserved."
   },
-
   "rgd_template_rules": {
     "namespace": {
       "rule": "REQUIRED in every resource template metadata block",
@@ -119,7 +191,8 @@
     },
     "pre_write_crd_field_check": {
       "rule": "Before writing any spec field in a CR template, verify the field exists in the LIVE CRD. If it is absent, do NOT include it — record the omission in MIGRATION-NOTES.md under 'Unsupported TF attributes'.",
-      "rationale": "AWS SDK/API parameters and Terraform lifecycle arguments are not the same set as ACK CRD spec fields. Reading the AWS service docs is NOT sufficient evidence that a field exists in the CRD. Unknown fields in a CR are silently pruned by the API server (structural schema pruning), so kubectl apply --dry-run=server will NOT flag them; in an RGD template kro fails the type check with 'schema not found for field <name>'.",
+      "rationale": "AWS SDK/API parameters and Terraform lifecycle arguments are not the same set as ACK CRD spec fields. Reading the AWS service docs is NOT sufficient evidence that a field exists in the CRD.",
+      "where_each_gate_bites": "STANDALONE CR under resources/: kubectl apply --dry-run=server DOES reject an unknown spec field. kubectl's default is --validate=true, i.e. strict server-side field validation, and Strict returns 400 naming every unknown field; field validation is stable since Kubernetes 1.27 and its feature gate has been removed. Unknown fields are pruned without signal only at the Ignore/Warn levels. RGD TEMPLATE: dry-run cannot see inside it, because resources[].template is x-kubernetes-preserve-unknown-fields: true — the one documented exception to pruning and to strict validation. The failure surfaces at RGD reconciliation as 'error getting field schema for path spec.<field>: schema not found for field <field>'. CONSEQUENCE: validate-spec-fields is the ONLY gate for the rgd.yaml half and a cheap second opinion on the resources/ half. Do not justify it with a pruning claim that is false for CRs. Ref: https://kubernetes.io/docs/reference/using-api/api-concepts/",
       "command": "kubectl get crd <plural>.<group> -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' | python3 -c \"import sys,json; d=json.load(sys.stdin); print(sorted(d.keys()))\"",
       "command_note": "versions[0] is correct for ACK CRDs, which currently ship a single v1alpha1 version. If a CRD ever serves multiple versions, select the one with storage: true instead.",
       "automated_gate": "scripts/run validate-spec-fields <resources-dir> — checks every spec key in generated CRs against the live CRD and exits non-zero on unknown fields.",
@@ -127,12 +200,20 @@
       "known_absent_fields": {
         "_note": "Non-authoritative snapshot (verified 2026-09 against each controller's main branch). The live enumeration above always wins. Controllers add fields over time — never omit a field solely because it appears here without re-checking.",
         "secretsmanager.services.k8s.aws/Secret": {
-          "absent": ["forceDeleteWithoutRecovery"],
-          "version_dependent": ["recoveryWindowInDays"],
-          "note": "forceDeleteWithoutRecovery is not a CRD spec field. recoveryWindowInDays is VERSION-DEPENDENT: added upstream in secretsmanager-controller v1.6.0 (absent at the v1.5.0 tag, present at v1.6.0 — verified by tag diff) and absent on every earlier controller. ENUMERATE THE LIVE CRD before writing it (verified absent on an EKS Auto Mode managed capability cluster in 2026-09). If present, map TF recovery_window_in_days (0 requests immediate deletion via the DeleteSecret ForceDeleteWithoutRecovery parameter). If absent, OMIT it and record it under 'Unsupported TF attributes' — writing it anyway means the API server silently prunes it. Never write this field on the basis of this note alone."
+          "absent": [
+            "forceDeleteWithoutRecovery"
+          ],
+          "version_dependent": [
+            "recoveryWindowInDays"
+          ],
+          "note": "forceDeleteWithoutRecovery is not a CRD spec field. recoveryWindowInDays is VERSION-DEPENDENT: added upstream in secretsmanager-controller v1.6.0 (absent at the v1.5.0 tag, present at v1.6.0 — verified by tag diff) and absent on every earlier controller. ENUMERATE THE LIVE CRD before writing it (verified absent on an EKS Auto Mode managed capability cluster in 2026-09). If present, map TF recovery_window_in_days (0 requests immediate deletion via the DeleteSecret ForceDeleteWithoutRecovery parameter). If absent, OMIT it and record it under 'Unsupported TF attributes' — in a CR the strict dry-run rejects it, and in an RGD template it wedges the RGD at reconciliation. Never write this field on the basis of this note alone."
         },
         "rds.services.k8s.aws/DBInstance": {
-          "absent": ["skipFinalSnapshot", "finalSnapshotIdentifier", "applyImmediately"],
+          "absent": [
+            "skipFinalSnapshot",
+            "finalSnapshotIdentifier",
+            "applyImmediately"
+          ],
           "note": "skipFinalSnapshot and finalSnapshotIdentifier are Terraform deletion-lifecycle arguments with no ACK CRD field. applyImmediately is an AWS API request parameter not exposed in the CRD spec. Omit all three and record them as unsupported TF attributes."
         }
       }
@@ -178,7 +259,6 @@
       "feature_gate": "ResourceAdoption is Beta with Enabled: true in the runtime's defaultACKFeatureGates — ON BY DEFAULT. Do NOT flag it to the operator as an unverifiable risk; that is overcautious. It can still be explicitly disabled, in which case adoption annotations are ignored and the CR is treated as a CREATE."
     }
   },
-
   "naming_conventions": {
     "_rationale": "All names derived algorithmically from the ACK Kind — no static per-TF-type table needed. Guarantees workshop doc commands match generated output regardless of stack.",
     "cr_metadata_name": {
@@ -245,7 +325,6 @@
       "aws_eks_pod_identity_association.cluster_name": "clusterName"
     }
   },
-
   "adoption_fields_by_kind": {
     "_reference": "references/ack/adoption/adoption-patterns.md § Adoption Fields",
     "s3.services.k8s.aws/Bucket": "{\"name\": \"<bucket>\"}",
@@ -273,7 +352,37 @@
     "secretsmanager.services.k8s.aws/Secret": "{\"name\": \"<secret-name>\", \"id\": \"<secret-arn>\"}",
     "eks.services.k8s.aws/PodIdentityAssociation": "{\"associationID\": \"<id>\", \"clusterName\": \"<cluster>\"}"
   },
-
+  "adoption_fields_verified_against": {
+    "_purpose": "Proof of validity for adoption_fields_by_kind. Without it the cache is unfalsifiable, so a cautious model re-derives keys the contract already states — observed as a 5-agent, ~40s web fan-out on a run whose 7 keys were all cached. At Phase 1, compare the INSTALLED controller line against the value here: match -> the cached key is provably valid, skip the web; mismatch or Kind absent -> web-verify that ONE service. Never the whole table.",
+    "_how_to_read_installed_version": "EKS Auto Mode managed capability: aws eks list-capabilities --cluster-name <c> --region <r>. Self-managed: kubectl get deploy -A -o jsonpath='{range .items[*]}{.metadata.name}{\"=\"}{.spec.template.spec.containers[*].image}{\"\\n\"}{end}' | grep -i controller. Read it ONCE per run, before the Phase A fan-out, and pass it to every subagent.",
+    "_bundled_capability_note": "A bundled ACK capability reports a platform version (e.g. 46.137.1-eks-1), not a per-service controller tag. Treat any bundled capability at or above 46.x as satisfying every 'ack-runtime' stamp below: adoption-by-annotation predates it by years. Do NOT bisect release tags to establish when a mechanism appeared — if the installed version already clears the gate, the answer changes no action.",
+    "_stamp_meaning": "'ack-runtime>=0.35' means the key lives in the controller's PopulateResourceFromAnnotation and has been stable since adoption-by-annotation became Beta-on-by-default in the shared runtime. A service-specific stamp names that controller's own tag.",
+    "_verified_on": "2026-09 against each controller's main branch and a live EKS Auto Mode cluster (ACK 46.137.1-eks-1).",
+    "s3.services.k8s.aws/Bucket": "ack-runtime>=0.35",
+    "eks.services.k8s.aws/Cluster": "ack-runtime>=0.35",
+    "eks.services.k8s.aws/Nodegroup": "ack-runtime>=0.35",
+    "eks.services.k8s.aws/AccessEntry": "ack-runtime>=0.35",
+    "eks.services.k8s.aws/Capability": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/VPC": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/Subnet": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/InternetGateway": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/NATGateway": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/ElasticIPAddress": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/RouteTable": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/SecurityGroup": "ack-runtime>=0.35",
+    "ec2.services.k8s.aws/LaunchTemplate": "ack-runtime>=0.35",
+    "iam.services.k8s.aws/Role": "ack-runtime>=0.35",
+    "iam.services.k8s.aws/Policy": "ack-runtime>=0.35",
+    "iam.services.k8s.aws/OpenIDConnectProvider": "ack-runtime>=0.35",
+    "kms.services.k8s.aws/Key": "ack-runtime>=0.35",
+    "kms.services.k8s.aws/Alias": "ack-runtime>=0.35",
+    "cloudwatchlogs.services.k8s.aws/LogGroup": "ack-runtime>=0.35",
+    "rds.services.k8s.aws/DBInstance": "ack-runtime>=0.35",
+    "rds.services.k8s.aws/DBSubnetGroup": "ack-runtime>=0.35",
+    "rds.services.k8s.aws/DBParameterGroup": "ack-runtime>=0.35",
+    "secretsmanager.services.k8s.aws/Secret": "ack-runtime>=0.35",
+    "eks.services.k8s.aws/PodIdentityAssociation": "ack-runtime>=0.35"
+  },
   "consolidation_rules": {
     "_purpose": "TF resources that ACK folds into a parent CR. Do NOT emit as separate CRs.",
     "aws_iam_role_policy_attachment": "NEVER skip silently. Extract `policy_arn` from the attachment resource and populate `spec.policies: [<policy_arn>]` on the parent Role CR. The iam-controller's syncManagedPolicies detach path is real: Role.spec.policies is fully declarative, and a managed policy attached in AWS but absent from the array is detached. Adoption does not trigger it — under adoption-policy: adopt the runtime backfills the ReadOne-observed spec into the CR, so later reconciles compare ReadOne against ReadOne and the spec delta is empty; see rgd_template_rules.omission_is_not_destructive.verified_ack, and note backfill_failure_race and adopt_or_create_exception there. So populate it because it is prudent, self-documenting, prevents Terraform drift during co-management, and mitigates that race — NOT because an immediate detach is pending. Do NOT describe omission as causing immediate permission loss under adoption-policy: adopt.",
@@ -288,7 +397,6 @@
     "aws_ec2_tag": "Merged into target resource's spec.tags list.",
     "aws_route": "Merged into ec2/RouteTable.spec.routes[]. Note: apigatewayv2/Route is unrelated to VPC routes."
   },
-
   "tf_only_pseudo_resources": [
     "aws_default_network_acl",
     "aws_default_route_table",
@@ -297,7 +405,6 @@
     "time_sleep",
     "aws_eks_access_policy_association"
   ],
-
   "grounding_loop": {
     "_purpose": "Every Phase B subagent runs this loop before returning success.",
     "steps": [
@@ -312,11 +419,15 @@
     "gate_commands_are_pre_supplied": "Your fan-out prompt contains the exact, copy-paste-ready command line for every gate you must run. Do NOT read scripts/*.py source to work out invocation syntax — if a command is missing from your prompt, that is a defect in the prompt, not a research task for you. Reading a helper script is warranted ONLY when you are authoring a JSON input file that the script consumes (e.g. decisions.json for render_report.py), never to run a validator.",
     "passed_gate_is_final": "When a gate returns zero severity=error findings, you are DONE. Do not re-read or re-inspect the file to 'confirm' — the validator's exit code IS the confirmation. Re-running a passed gate is duplicated work on the critical path."
   },
-
   "capability_role_trust_policy": {
     "_derived_from": "Terraform/examples/rekoncile-demo/addons.tf",
-    "principal": {"Service": "capabilities.eks.amazonaws.com"},
-    "actions": ["sts:AssumeRole", "sts:TagSession"],
+    "principal": {
+      "Service": "capabilities.eks.amazonaws.com"
+    },
+    "actions": [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ],
     "note": "EKS capability roles use a DIFFERENT trust relationship from cluster (eks.amazonaws.com) and node (ec2.amazonaws.com) roles. Every dedicated capability role must use this trust policy."
   }
 }
