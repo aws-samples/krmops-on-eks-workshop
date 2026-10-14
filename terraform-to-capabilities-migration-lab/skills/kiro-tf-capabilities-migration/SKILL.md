@@ -147,7 +147,36 @@ Measured baseline on a 44-manifest stack against a live cluster: Phase 4 validat
 
 ### Parallel Phase A — Web verification (Phase 1)
 
-**Fan-out unit: one ACK SERVICE (controller repo), carrying ALL the TF types that map to it** — NOT one subagent per TF type. Derive the set by grouping `migrate-set.json` TF types by their target controller (`aws_iam_role`, `aws_iam_policy`, `aws_iam_role_policy_attachment` → one `iam` agent). Typically 4–8 services for a real stack, versus 15–25 types.
+#### ⚠️ STEP 0 — CONTRACT-FIRST LOOKUP. Do this BEFORE spawning anything.
+
+**`references/authoring-contract.json` → `adoption_fields_by_kind` already ships with hand-verified adoption-fields keys for ~25 common Kinds. The fan-out below exists only for Kinds that are NOT in it.** Spawning an agent for a Kind already in the contract re-derives a shipped constant.
+
+```bash
+python3 - <<'PY'
+import json
+c=json.load(open('references/authoring-contract.json'))['adoption_fields_by_kind']
+need=[ ... "<group>/<Kind>" for every adoptable TF type, from the live CRD read ... ]
+hit=[k for k in need if k in c]; miss=[k for k in need if k not in c]
+print("CACHED (no agent needed):"); [print("  ",k,"->",c[k]) for k in hit]
+print("MUST WEB-VERIFY (spawn one agent per distinct service):"); [print("  ",k) for k in miss]
+print(f"\nfan-out size = {len({k.split('/')[0] for k in miss})} services, not {len({k.split('/')[0] for k in need})}")
+PY
+```
+
+Then: **spawn Phase A agents ONLY for the services appearing in `miss`.** If `miss` is empty, Phase A is skipped entirely — state that in the Phase 1 Decision_Summary rather than silently omitting it.
+
+Measured cost of not doing this: on the reference RDS stack **all 7 Kinds were already in the contract**, byte-for-byte identical to what the agents returned — yet Phase A ran 5 agents for **148s / 144s / 163s across three consecutive runs**. That is ~155s of pure waste *per run, forever*, not a one-time cold-start cost. Three independent runs produced keys matching the shipped contract exactly, which is the evidence that these particular values are stable.
+
+**What the contract does NOT replace — still mandatory every run:**
+- **The live-CRD read** (one batched `kubectl get crd … -o json`, ~2s). The contract cannot tell you what is *installed*, which fields are required, which are immutable, or the tag shape. The cluster is authoritative for all of that and the contract's own notes say its other snapshots are non-authoritative.
+- **Consolidation questions for unfamiliar TF types.** `consolidation_rules` covers the common ones (`aws_iam_role_policy_attachment`, `aws_security_group_rule`, several `aws_s3_bucket_*`); anything absent still needs the `helm/crds` + `pkg/resource` double listing.
+- **Any Kind absent from `adoption_fields_by_kind`.** Guessing a lookup key is the #1 cause of adoption failure — a wrong or mis-cased key is a TERMINAL error that never self-heals.
+
+**Staleness handling.** Trust the contract for lookup keys; it is the one fact class that is a stable controller-API contract rather than a version-dependent schema. If an adopted CR later sits in `NotFound` or reports a terminal `required field missing`, THAT is the signal to web-verify that one Kind and promote the correction into the contract — once, not per run. The blast radius is small by construction: adoption CRs carry `deletion-policy: retain`, so a failed lookup touches no live AWS state.
+
+---
+
+**Fan-out unit (for `miss` services only): one ACK SERVICE (controller repo), carrying ALL the TF types that map to it** — NOT one subagent per TF type. Derive the set by grouping `migrate-set.json` TF types by their target controller (`aws_iam_role`, `aws_iam_policy`, `aws_iam_role_policy_attachment` → one `iam` agent). Typically 4–8 services for a real stack, versus 15–25 types.
 
 **⚠️ ONE AGENT PER SERVICE. NEVER BUNDLE TWO SERVICES INTO ONE AGENT.** The fan-out unit is one controller repo. Bundling is not a cheaper version of the fan-out — it *is* the serial path, relocated inside a subagent, and it silently becomes the long pole.
 
@@ -239,8 +268,27 @@ Measured: one 15.9 KB interface file drove 6 concurrent agents to **zero schema 
 **Fan-out — every applicable row below is MANDATORY, not a menu:**
 - One agent per ACK CR under `resources/` (7 on the reference stack; batch to ~3 if the CR count exceeds ~10). Each writes its own file and runs its own gate.
 - One agent for `rgd.yaml` + `instance.yaml` together — they share the schema, so splitting them guarantees drift.
-- One agent for `MIGRATION-NOTES.md`.
+- One agent for `MIGRATION-NOTES.md`. **Hand it the path `references/migration-notes-skeleton.md` — do NOT let it invent the document structure.** The skeleton fixes the seven sections and all boilerplate, leaving `<FILL: …>` markers that each carry their own byte budget, so the agent spends its tokens only on the judgement content (which permission gaps to flag, which cross-boundary dependencies exist). Measured cost of omitting it: the agent authored a 12.3 KB draft, trimmed it twice to 9.7 KB against a 4–7 KB brief — ~17.4 KB emitted for a 9.7 KB file, 199s, 20 tool uses — and became the long pole of the entire fan-out. Writing-then-trimming is the same latency defect this section already forbids for YAML.
+
+  **⚠️ Do NOT ask this agent to report a per-marker byte audit of its own output.** The budgets are authoring constraints, not a deliverable. Measuring the file costs more than writing it: the same agent with the same inputs and the same skeleton ran **252s with a 24-ceiling self-audit versus 146s without it — ~105s, 42% of the agent's wall-clock, spent grading its own homework.** The audit also arrives too late to act on, because the one-Write rule forbids an edit-down pass, so an overrun is reported and then kept. If you want the numbers, compute them from the finished file after the run — it is on disk and a `wc -c` plus a marker diff is free. Ask only for the file path and its total size.
 - One agent for the `decisions.json` Phase 2–4 `checkpoints[]` entries. **These are an ARTIFACT, not skill bookkeeping — delegate them like any other.** Emitting them from the main thread serializes ~10–15 KB after the fan-out has drained, which is the worst possible placement. Spawn this agent concurrently with the CR agents; it needs only the Phase 1 checkpoint entry and the shared interface, both of which exist before authoring starts.
+
+**⚠️ ALL of the agents above go in ONE message, as parallel tool calls. Splitting the fan-out across two messages is the single most expensive mistake in this phase — it costs more than every other latency rule on this page combined.**
+
+A second message cannot start until the first message's slowest agent has returned, so two waves cost `slowest(wave1) + slowest(wave2)` instead of `slowest(all)`. Measured on the reference stack: 8 agents in message 1 (169s, sum 382s → **2.26× = the theoretical ceiling**) followed by 2 agents in message 2 (199s, sum 244s) cost **368s** where one message of all 10 would have cost **~199s**. The phase-level speedup collapsed from a possible 3.15× to **1.11×** — ~170s of pure, self-inflicted serialization, with every individual agent behaving perfectly.
+
+The trap is that the leftover agents feel like follow-up work: `MIGRATION-NOTES.md` reads like documentation you write *about* finished artifacts, and the `decisions.json` entries read like a summary of what just happened. Neither is true. **Both depend only on the shared interface and the Phase 1 checkpoint entry — never on the authored YAML** — so both are wave-1 work. Check the dependency, not the narrative order.
+
+**STOP-AND-COUNT GATE — perform this immediately before sending the fan-out message, every time:**
+
+> Count the parallel agent calls in the message you are about to send. It MUST equal
+> **(number of ACK CRs) + 3** — the +3 being `rgd.yaml`+`instance.yaml`, `MIGRATION-NOTES.md`,
+> and the `decisions.json` entries. On a 7-CR stack that is **10**. If the count is lower,
+> do not send: the missing agents are about to become a second wave.
+
+This gate exists because the rule above is **not self-enforcing, and has been violated by an author who had just finished writing it.** Observed on the very next run: 8 agents sent, then 2 — costing **318s** on a run whose entire Phase 2–3 should have been ~206s. Every individual agent passed its gate on attempt 1; the only defect was the split. Knowing the rule is demonstrably not sufficient, so count the calls rather than trusting recall.
+
+Why the miscount happens, specifically: the CR agents and the `rgd.yaml` agent are the ones you are *thinking about* while assembling the fan-out, because they consume the shared interface's field tables. `MIGRATION-NOTES.md` and `decisions.json` consume only the run parameters and the Phase 1 checkpoint entry — so they drop out of working memory exactly when the message is being composed. **Add those two FIRST, before the CR agents, so they cannot be forgotten.**
 
 **Hand every authoring agent its gate as a literal, copy-paste-ready command line.** Agents MUST NOT read helper-script source to discover invocation syntax — if a fan-out prompt does not already contain the exact command, that is a defect in the prompt, not a research task for the agent. Reading `scripts/*.py` is warranted ONLY when authoring a JSON input file that a script consumes (e.g. `decisions.json` for `render_report.py`), never to run a validator. Observed cost of getting this wrong: ~8s of one agent's critical path spent reading `validate_cel.py` and `validate_spec_fields.py` while its prompt already contained both commands.
 
@@ -374,7 +422,7 @@ Then load per-phase based on the selected path (tables below).
 | 1 | `tf-state-schema.md`, `ack/aws-to-ack-mappings.md` **[S]** |
 | 2 | `ack/adoption/adoption-patterns.md`, `ack/adoption/examples.md` |
 | 3 | `kro/rgd-reference.md` **[S]**, `kro/building-abstractions.md` **[S]**, `kro/adoption/examples.md` |
-| 4 | `kro/adoption/instances.md`, `ack/controller-permissions.md` **[S]** |
+| 4 | `kro/adoption/instances.md`, `ack/controller-permissions.md` **[S]**, `migration-notes-skeleton.md` **[S]** |
 
 **Create_Path:**
 
@@ -383,7 +431,7 @@ Then load per-phase based on the selected path (tables below).
 | 1 | `tf-hcl-schema.md`, `ack/aws-to-ack-mappings.md` **[S]** |
 | 2 | `ack/creation/creation-patterns.md`, `ack/creation/examples.md` |
 | 3 | `kro/rgd-reference.md` **[S]**, `kro/building-abstractions.md` **[S]**, `kro/creation/hcl-to-rgd.md`, `kro/creation/examples.md` |
-| 4 | `kro/creation/examples.md`, `ack/controller-permissions.md` **[S]** |
+| 4 | `kro/creation/examples.md`, `ack/controller-permissions.md` **[S]**, `migration-notes-skeleton.md` **[S]** |
 
 (**[S]** = Shared file, used by both paths)
 
@@ -415,6 +463,7 @@ references/
 │       └── examples.md
 ├── tf-state-schema.md
 ├── tf-hcl-schema.md
+├── migration-notes-skeleton.md        [S]
 └── known-limitations.md
 ```
 
@@ -442,7 +491,7 @@ Then reason over the emitted JSON:
 
 1. Verify version 4 was parsed (`source.state_location` was set and `resources[]` is populated).
 2. For each resource in `migrate-set.json`, look up its Terraform type against `cluster.ack_crds`. The mapping is derived at runtime — an ACK Kind exists iff a CRD in `*.services.k8s.aws` with that Kind is installed. `aws-to-ack-mappings.md` is a HINT only; the live CRD list is authoritative.
-3. **🌐 Web-verify** each resource's ACK controller status per [Mandatory Web Verification](#mandatory-web-verification-all-phases) — especially for resources whose CRD is not in the current cluster (may be GA on another cluster).
+3. **Contract-first, then web-verify the remainder.** FIRST check every adoptable Kind against `references/authoring-contract.json` → `adoption_fields_by_kind` (see § Parallel Phase A, STEP 0). Kinds found there need NO agent — their lookup keys are shipped, hand-verified constants. Then **🌐 web-verify only the Kinds that were missing**, per [Mandatory Web Verification](#mandatory-web-verification-all-phases) — including any resource whose CRD is absent from this cluster (it may be GA elsewhere). On the reference RDS stack this takes the fan-out from 5 agents / ~155s to zero.
 4. Identify resources that ACK consolidates into parent CRs (e.g., `aws_iam_role_policy_attachment` → merged into Role).
 5. The cross-reference and dependency graphs are already in `migrate-set.cross_refs`; use them for RGD `readyWhen` ordering.
 6. Document any resources without an ACK Kind installed in the target cluster.
@@ -952,7 +1001,7 @@ Annotations have no regex constraints, so exact TF traceability lives here.
 | `rekoncile.io/from-tf-address` | e.g. `module.vpc.aws_vpc.this[0]` | Exact TF address this resource maps to |
 | `rekoncile.io/tf-attributes` | JSON blob | Map of `{ackField: "tf.attribute.path"}` for every populated field, e.g. `{"spec.cidrBlocks[0]":"attributes.cidr_block"}` |
 
-The `rekoncile.io/tf-attributes` annotation is verbose but load-bearing — it's what makes the report's "Where did this value come from?" tooltip work.
+`rekoncile.io/tf-attributes` is verbose, and is for a **human** auditing a CR against tfstate — nothing machine-reads it today. Verified: `render_report.py` and `report.html.j2` contain no reference to `rekoncile.io`, `tf-attributes`, or `from-tf-address`, so there is no report tooltip consuming it (an earlier version of this line claimed there was).
 
 ### Adopt_Path Output Files
 
@@ -1007,7 +1056,7 @@ Then reason over the emitted JSON:
 
 1. Verify `hcl.resources[]`, `hcl.variables[]`, `hcl.outputs[]`, `hcl.locals`, and `hcl.data[]` were populated.
 2. Map each `hcl.resources[]` type against `cluster.ack_crds` (the live CRD inventory is authoritative; `aws-to-ack-mappings.md` is a hint only).
-3. **🌐 Web-verify** each resource's ACK controller status per [Mandatory Web Verification](#mandatory-web-verification-all-phases).
+3. **Contract-first, then web-verify the remainder.** Check each Kind against `references/authoring-contract.json` → `adoption_fields_by_kind` first (see § Parallel Phase A, STEP 0); **🌐 web-verify only what is missing**, per [Mandatory Web Verification](#mandatory-web-verification-all-phases). (On the Create_Path the adoption keys themselves are unused, but the same cached Kind/group mappings still avoid redundant fetches.)
 4. Record resource types with no ACK equivalent for the operator summary.
 5. Identify resources that ACK consolidates into parent CRs.
 6. The HCL-derived dependency graph is already in `migrate-set.cross_refs` (entries with `"source": "hcl"`).
@@ -1397,7 +1446,7 @@ is the single largest source of wasted Phase 1 time.
 | Does this Kind exist / is it installed? | **live cluster** (`cluster.ack_crds`) | A CRD is installed or it isn't |
 | Which spec fields exist? Which are required? Which are immutable? | **live cluster** (one batched `kubectl get crd … -o json`) | The cluster's controller version is what will reconcile your CR |
 | Status field names and types (for `readyWhen`) | **live cluster** | Same reason |
-| **What are the `adoption-fields` lookup keys, and their exact casing?** | **web — controller source** | NOT derivable from any CRD. Lives in `pkg/resource/<r>/resource.go` → `PopulateResourceFromAnnotation`. Guessing here is the #1 cause of adoption failures |
+| **What are the `adoption-fields` lookup keys, and their exact casing?** | **1st: `authoring-contract.json` → `adoption_fields_by_kind`. Only if absent: web — controller source** | NOT derivable from any CRD. Lives in `pkg/resource/<r>/resource.go` → `PopulateResourceFromAnnotation`, but ~25 common Kinds are already shipped hand-verified in the contract — check there FIRST (§ Parallel Phase A, STEP 0). Guessing is the #1 cause of adoption failures; re-deriving a cached constant is ~155s of waste per run |
 | **Is a TF resource consolidated into a parent Kind?** | **web — CRD filename listing** | Absence of a Kind is only provable by enumerating all of them |
 | **Does a field exist upstream but not on this cluster?** | **web — compare to `cluster.ack_crds`** | Reveals controller-version drift; the cluster alone cannot tell you a field was added later |
 
@@ -1461,6 +1510,7 @@ For **every** ACK CR being generated:
 ### Why This Matters — Non-Negotiable
 
 - **NEVER classify a resource as "no ACK equivalent" without exhausting all web search strategies first**
+- **But DO skip the web for a Kind whose adoption-fields key is already in `authoring-contract.json`** (§ Parallel Phase A, STEP 0). "Mandatory web verification" means *never guess* — it does not mean *re-derive a shipped, hand-verified constant on every run*. The two failure modes have very different costs: guessing a lookup key breaks adoption; re-deriving a cached one cost ~155s per run across three measured runs and returned byte-identical values every time.
 - ACK controllers are independently versioned and graduate from Preview to GA frequently
 - New controllers and CRDs are added regularly without local reference files being updated
 - CRD schemas evolve between controller versions (fields added, renamed, deprecated)
